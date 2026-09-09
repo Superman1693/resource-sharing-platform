@@ -1,0 +1,54 @@
+spring:
+  application:
+    name: user-center
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/yiya?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai #jdbc:mysql://localhost:3306/yiya
+    username: root
+    password: 123456
+  session:
+    timeout: 86400s  #session 一天失效
+    cookie:
+      max-age: 86400  # Cookie有效期：24小时（和Session超时一致，核心！）
+      http-only: true # 禁止前端JS读取Cookie，防XSS攻击
+      secure: false   # 开发环境设false，生产环境（HTTPS）设true
+      same-site: Lax  # 兼容跨域/同域请求
+  # 若生产环境需要，可配置Redis存储Session（服务重启不丢失登录态）
+  # session:
+  #   store-type: redis
+server:
+  port: 8080  #8080
+  servlet:
+    context-path: /api
+
+# 完整的Mybatis-Plus核心配置，直接粘贴到你的yml文件中
+mybatis-plus:
+  # 配置项必须写对，大小写/层级错1个都不生效！
+  configuration:
+    # 1. 强制开启驼峰 ↔ 下划线自动映射（核心开关）
+    map-underscore-to-camel-case: true
+    # 2. 开启SQL日志打印（方便验证映射是否生效）
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # 关闭无用配置，避免干扰
+    call-setters-on-nulls: false
+    cache-enabled: false
+    #逻辑删除：逻辑删除（软删除）是指：删除数据时不真正从数据库中删除记录，而是通过修改 flag 字段的值标记为 “已删除”。查询数据时，MyBatis-Plus 会自动过滤掉 flag=1 的记录，实现 “删除效果” 但保留数据。
+  global-config:
+    db-config:
+      logic-delete-field: isDelete  #全局逻辑删除的实体字段名(默认为flag)且在实体类上需要使用@TableLogic
+      logic-delete-value: 1   #逻辑已删除值（默认为1）
+      logic-not-delete-value: 0   # 逻辑未删除（默认为0）
+      id-type: AUTO
+upload:
+  path: F:/images/
+#阿里云使用参数
+aliyun:
+  oss:
+    endpoint: https://oss-cn-beijing.aliyuncs.com  #OSS外网访问地址
+    bucketName: project-java-demo1  #bucket名称
+    region: cn-beijing  #
+gitee:
+  owner: superman1693
+  repo: test-images
+  branch: main
+  access-token: 1c9f36e80c7dd183ee6bbb7665071c37

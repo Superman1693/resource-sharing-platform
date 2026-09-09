@@ -1,0 +1,80 @@
+spring:
+  application:
+    name: user-center
+  profiles:
+    active: dev
+  datasource:
+    type: com.alibaba.druid.pool.DruidDataSource
+    druid:
+      # 基本连接参数由 application-dev.yml 提供
+      initial-size: 5
+      min-idle: 5
+      max-active: 20
+      max-wait: 30000
+      # 连接保活
+      time-between-eviction-runs-millis: 60000
+      min-evictable-idle-time-millis: 300000
+      validation-query: SELECT 1
+      test-while-idle: true
+      test-on-borrow: false
+      test-on-return: false
+      # 慢 SQL 监控
+      filter:
+        stat:
+          enabled: true
+          log-slow-sql: true
+          slow-sql-millis: 2000
+          merge-sql: true
+        wall:
+          enabled: true
+        slf4j:
+          enabled: true
+      # 监控面板
+      stat-view-servlet:
+        enabled: true
+        url-pattern: /druid/*
+        login-username: admin
+        login-password: admin123
+        reset-enable: false
+      # Web 监控过滤器
+      web-stat-filter:
+        enabled: true
+        url-pattern: /*
+        exclusions: "*.js,*.gif,*.jpg,*.png,*.css,*.ico,/druid/*"
+  main:
+    allow-circular-references: true  # 允许循环依赖
+  servlet:
+    multipart:
+      # 单文件大小上限（Spring Boot 默认仅 1MB，不配置会导致稍大的文件直接被框架拒绝）
+      # 100MB 与资源上传页面的限制一致；头像/封面图片由 UploadController 自行校验 10MB
+      max-file-size: 100MB
+      max-request-size: 105MB
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+  elasticsearch:
+    uris: http://127.0.0.1:9200
+    username:
+    password:
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    # 生产环境请改为 org.apache.ibatis.logging.nologging.NoLoggingImpl
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      logic-delete-field: isDelete
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+      id-type: AUTO
+
+# 限流配置（自定义，供 RateLimitInterceptor 读取）
+rate-limit:
+  chat-per-minute: 20
+  default-per-minute: 100
+
+# 敏感词外部词库文件（管理员通过 /admin/sensitive/words 更新时写入；
+# 存在时优先于内置 classpath:sensitive-words.txt，相对路径基于工作目录）
+sensitive:
+  words-file: sensitive-words.txt

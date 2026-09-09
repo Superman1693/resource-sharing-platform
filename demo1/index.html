@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      // sockjs-client 依赖 Node 风格的全局变量 global，浏览器环境需在模块加载前注入
+      window.global = window
+    </script>
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <link rel="apple-touch-icon" href="/logo.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="编程知识星球" />
+    <meta property="og:description" content="编程知识学习、笔记沉淀与资源共享平台" />
+    <meta property="og:image" content="/logo.png" />
+    <meta property="og:site_name" content="编程知识星球" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="编程知识星球" />
+    <meta name="twitter:description" content="编程知识学习、笔记沉淀与资源共享平台" />
+    <meta name="twitter:image" content="/logo.png" />
+    <title>编程知识星球</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

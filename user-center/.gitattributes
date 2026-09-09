@@ -1,0 +1,13 @@
+/mvnw text eol=lf
+*.cmd text eol=crlf
+# Spring Boot 配置文件（敏感信息）
+src/main/resources/application*.yml
+src/main/resources/application*.yaml
+src/main/resources/application*.properties
+
+# 其他常见敏感文件
+*.env
+*.env.local
+*.env.prod
+*.dev.yml
+*.prod.yml
