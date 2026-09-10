@@ -36,8 +36,9 @@ const loginRules = reactive({
     { required: true, message: '请确认密码', trigger: 'blur' },
     {
       validator: (_, value) => {
+        // 空值交给上面的 required 规则提示，这里不重复 reject，避免出现两段「请确认密码」
         if (!value) {
-          return Promise.reject('请确认密码')
+          return Promise.resolve()
         }
         if (value !== formState.user.userPassword) {
           return Promise.reject('两次密码输入不一致')
@@ -286,9 +287,10 @@ const handleSubmit = async () => {
   content: '';
   position: absolute;
   inset: 0;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
-  background-repeat: repeat;
-  opacity: 0.5;
+  /* 移除 feTurbulence SVG 噪点滤镜：高频 fractalNoise 全屏平铺每帧重算，是页面卡顿主因；
+     噪点视觉贡献极小（原 opacity 0.5 * 0.03 ≈ 0.015），改用近乎透明的纯色避免 GPU 负载 */
+  background: rgba(255, 255, 255, 0.008);
+  opacity: 1;
 }
 
 .bg-circle {

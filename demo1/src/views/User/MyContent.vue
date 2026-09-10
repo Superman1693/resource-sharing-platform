@@ -2,7 +2,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '../../store/userLogin'
-import { getNoteList, getMyResources, getMyComments, getMyLikes, getMyCollections } from '../../utils/api'
+import { getMyNotes, getMyResources, getMyComments, getMyLikes, getMyCollections } from '../../utils/api'
 import UserAvatar from '../../components/UserAvatar.vue'
 import { message } from 'ant-design-vue'
 import {
@@ -29,6 +29,8 @@ const notes = ref([])
 const notesTotal = ref(0)
 const notesPage = ref(1)
 const notesLoading = ref(false)
+// 笔记状态筛选：''-全部 draft-草稿 scheduled-定时中 published-已发布
+const notesStatus = ref('')
 
 const resources = ref([])
 const resourcesTotal = ref(0)
@@ -54,13 +56,12 @@ const collectionsLoading = ref(false)
 const loadedTabs = new Set()
 
 // ===== 加载函数 =====
-// 我的笔记（复用公共笔记列表接口，按 userId 过滤）
+// 我的笔记（按 status 筛选：草稿/定时中/已发布，走 /note/my 接口）
 const loadNotes = async () => {
   try {
     notesLoading.value = true
-    const res = await getNoteList({
-      userId: userStore.id,
-      sortType: 'latest',
+    const res = await getMyNotes({
+      status: notesStatus.value || undefined,
       page: notesPage.value,
       pageSize,
     })
@@ -73,6 +74,12 @@ const loadNotes = async () => {
   } finally {
     notesLoading.value = false
   }
+}
+
+// 切换笔记状态筛选
+const onNotesStatusChange = () => {
+  notesPage.value = 1
+  loadNotes()
 }
 
 // 我的资源
@@ -197,6 +204,14 @@ const goResource = (id) => {
       <!-- 我的笔记 -->
       <a-tab-pane key="notes" tab="我的笔记">
         <div class="list-container">
+          <div style="margin-bottom: 12px">
+            <a-radio-group v-model:value="notesStatus" size="small" @change="onNotesStatusChange">
+              <a-radio-button value="">全部</a-radio-button>
+              <a-radio-button value="draft">草稿</a-radio-button>
+              <a-radio-button value="scheduled">定时中</a-radio-button>
+              <a-radio-button value="published">已发布</a-radio-button>
+            </a-radio-group>
+          </div>
           <a-spin :spinning="notesLoading">
             <div v-if="notes.length === 0 && !notesLoading" class="empty-state">
               <FileTextOutlined class="empty-icon" />

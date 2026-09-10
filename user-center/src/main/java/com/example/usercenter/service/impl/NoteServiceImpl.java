@@ -20,6 +20,7 @@ import com.example.usercenter.event.NoteHotScoreEvent;
 import com.example.usercenter.service.NoteService;
 import com.example.usercenter.service.EsSearchService;
 import com.example.usercenter.service.KnowledgeService;
+import com.example.usercenter.service.PointsService;
 import com.example.usercenter.service.TagService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -90,6 +91,9 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
     private TagService tagService;
 
     @Resource
+    private PointsService pointsService;
+
+    @Resource
     private RBloomFilter<Long> noteBloomFilter;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -126,21 +130,28 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
     }
 
     @Override
-    @Cacheable(value = "noteDetail", key = "#id", unless = "#result == null")
-    public Note getNoteDetail(Long id) {
+    public Note getNoteDetail(Long id, Long userId, boolean isAdmin) {
         if (id == null || id <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记ID不能为空");
         }
 
-        // 布隆过滤器拦截：ID 不存在则直接返回，防止缓存穿透
-        if (!noteBloomFilter.contains(id)) {
-            log.debug("布隆过滤器拦截: noteId={} 不存在", id);
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记不存在");
+        // 布隆过滤器拦截（仅访客走布隆；draft/scheduled 不在布隆里，作者/管理员跳过避免误伤）
+        if (userId == null || !isAdmin) {
+            if (!noteBloomFilter.contains(id)) {
+                log.debug("布隆过滤器拦截: noteId={} 不存在", id);
+                throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记不存在");
+            }
         }
 
         Note note = this.getById(id);
         if (note == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记不存在");
+        }
+
+        // status 权限过滤：非作者非管理员访问非 published 笔记视为不存在
+        boolean isOwner = userId != null && note.getAuthorId() != null && userId.equals(note.getAuthorId());
+        if (!"published".equals(note.getStatus()) && !isOwner && !isAdmin) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "笔记不存在");
         }
 
         processNoteTags(note);
@@ -182,8 +193,22 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
         note.setViewCount(0);
         note.setCommentCount(0);
         note.setLikeCount(0);
-        note.setStatus(StringUtils.isBlank(note.getStatus()) ? "published" : note.getStatus());
-        note.setPublishTime(new Date());
+        // status：空默认 published；支持 draft/scheduled
+        if (StringUtils.isBlank(note.getStatus())) {
+            note.setStatus("published");
+        }
+        if ("scheduled".equals(note.getStatus())) {
+            // 定时发布需指定未来的发布时间
+            if (note.getPublishTime() == null || !note.getPublishTime().after(new Date())) {
+                throw new BusinessException(ErrorCode.PARAMS_ERROR, "定时发布需指定未来的发布时间");
+            }
+        } else if ("draft".equals(note.getStatus())) {
+            // 草稿不记录发布时间
+            note.setPublishTime(null);
+        } else {
+            // published
+            note.setPublishTime(new Date());
+        }
         note.setCreateTime(new Date());
         note.setUpdateTime(new Date());
 
@@ -201,24 +226,12 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "创建笔记失败");
         }
 
-        // 将新笔记 ID 加入布隆过滤器
-        noteBloomFilter.add(note.getId());
-
-        // 维护星球内容计数：仅已发布的笔记计入对应星球的内容数
-        if (note.getStarId() != null && "published".equals(note.getStatus())) {
-            starMapper.updateContentCount(note.getStarId(), 1);
-        }
-
         processNoteTags(note);
-        // 双写标签关联表（仅已发布笔记进入标签广场）
-        if ("published".equals(note.getStatus()) && note.getTagList() != null) {
-            try { tagService.syncNoteTags(note.getId(), java.util.Collections.emptyList(), note.getTagList()); }
-            catch (Exception e) { log.warn("标签关联同步失败: noteId={}", note.getId(), e); }
+        // 仅 published 触发发布副作用（布隆/ES/content_count/知识地图/标签关联/积分）
+        // draft/scheduled 不进发现流，等草稿发布或定时任务到点再触发
+        if ("published".equals(note.getStatus())) {
+            publishSideEffects(note, true);
         }
-        // 同步到 ES
-        esSearchService.indexNote(note);
-        // 同步到星球知识地图（自动生成节点+连线）
-        knowledgeService.syncNodeFromNote(note);
         return note;
     }
 
@@ -262,8 +275,21 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
         if (StringUtils.isNotBlank(note.getCoverImage())) {
             oldNote.setCoverImage(note.getCoverImage());
         }
+        String previousStatus = oldNote.getStatus();
+        boolean becamePublished = false;
         if (StringUtils.isNotBlank(note.getStatus())) {
-            oldNote.setStatus(note.getStatus());
+            String newStatus = note.getStatus();
+            // 禁止 rejected → published/scheduled 绕过审核
+            if ("rejected".equals(previousStatus)
+                    && ("published".equals(newStatus) || "scheduled".equals(newStatus))) {
+                throw new BusinessException(ErrorCode.NO_AUTH, "被拒绝的笔记需修改后重新提交，不能直接发布");
+            }
+            oldNote.setStatus(newStatus);
+            // 非发布态 → 发布态：刷新发布时间并标记触发发布副作用
+            if ("published".equals(newStatus) && !"published".equals(previousStatus)) {
+                oldNote.setPublishTime(new Date());
+                becamePublished = true;
+            }
         }
         // 记录旧标签列表（用于 diff 关联表），在 setTags 覆盖前取
         List<String> oldTagList = parseTagsJsonToList(oldNote.getTags());
@@ -277,14 +303,23 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
 
         oldNote.setUpdateTime(new Date());
         boolean result = this.updateById(oldNote);
-        // 同步到 ES
-        if (result) esSearchService.indexNote(oldNote);
-        // 同步到星球知识地图（更新节点元数据+自动连线）
-        if (result) knowledgeService.syncNodeFromNote(oldNote);
-        // 双写标签关联表（仅已发布，且本次提交了 tagList）
-        if (result && "published".equals(oldNote.getStatus()) && note.getTagList() != null) {
-            try { tagService.syncNoteTags(id, oldTagList, note.getTagList()); }
-            catch (Exception e) { log.warn("标签关联同步失败: noteId={}", id, e); }
+        if (result) {
+            processNoteTags(oldNote);
+            if (becamePublished) {
+                // 草稿/定时/待审 → 已发布：触发完整发布副作用（含积分，首次发布）
+                publishSideEffects(oldNote, true);
+            } else if ("published".equals(oldNote.getStatus())) {
+                // 已发布笔记编辑后仍发布：同步 ES + 知识地图 + 标签 diff
+                try { esSearchService.indexNote(oldNote); }
+                catch (Exception e) { log.warn("ES 索引失败: noteId={}", id, e); }
+                try { knowledgeService.syncNodeFromNote(oldNote); }
+                catch (Exception e) { log.warn("知识地图同步失败: noteId={}", id, e); }
+                if (note.getTagList() != null) {
+                    try { tagService.syncNoteTags(id, oldTagList, note.getTagList()); }
+                    catch (Exception e) { log.warn("标签关联同步失败: noteId={}", id, e); }
+                }
+            }
+            // draft/scheduled 编辑：不索引 ES，不进发现流
         }
         return result;
     }
@@ -353,6 +388,11 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
 
         // 异步更新热度分（通过事件驱动，避免 @Async 自调用失效）
         eventPublisher.publishEvent(new NoteHotScoreEvent(this, id));
+
+        // 给笔记作者 +2 积分
+        if (note.getAuthorId() != null) {
+            pointsService.addPoints(note.getAuthorId(), 2, "like", "note", id, "笔记被点赞");
+        }
 
         return true;
     }
@@ -532,5 +572,181 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
      */
     private boolean isAdmin(User user) {
         return user != null && user.getUserRole() != null && user.getUserRole() == ADMIN_ROLE;
+    }
+
+    /**
+     * 笔记发布副作用：布隆过滤器 + 星球内容计数 + ES 索引 + 知识地图 + 标签关联 + 积分
+     * 由 createNote(published)、approveNote、ScheduledPublishTask 复用，保证三处一致
+     * @param awardPoints 是否发放发布积分（首次发布 true；审核通过 false，因举报转 pending 前已发过）
+     */
+    private void publishSideEffects(Note note, boolean awardPoints) {
+        // 加入布隆过滤器
+        try { noteBloomFilter.add(note.getId()); }
+        catch (Exception e) { log.warn("布隆过滤器添加失败: noteId={}", note.getId(), e); }
+        // 维护星球内容计数
+        if (note.getStarId() != null) {
+            try { starMapper.updateContentCount(note.getStarId(), 1); }
+            catch (Exception e) { log.warn("星球内容计数+1失败: noteId={}", note.getId(), e); }
+        }
+        // 同步到 ES
+        try { esSearchService.indexNote(note); }
+        catch (Exception e) { log.warn("ES 索引失败: noteId={}", note.getId(), e); }
+        // 同步到星球知识地图（自动生成节点+连线）
+        try { knowledgeService.syncNodeFromNote(note); }
+        catch (Exception e) { log.warn("知识地图同步失败: noteId={}", note.getId(), e); }
+        // 双写标签关联表（仅已发布笔记进入标签广场）
+        if (note.getTagList() != null) {
+            try { tagService.syncNoteTags(note.getId(), java.util.Collections.emptyList(), note.getTagList()); }
+            catch (Exception e) { log.warn("标签关联同步失败: noteId={}", note.getId(), e); }
+        }
+        // 发布笔记 +20 积分（仅首次发布）
+        if (awardPoints && note.getAuthorId() != null) {
+            try { pointsService.addPoints(note.getAuthorId(), 20, "publish", "note", note.getId(), "发布笔记"); }
+            catch (Exception e) { log.warn("发布积分发放失败: noteId={}", note.getId(), e); }
+        }
+    }
+
+    /**
+     * 审核通过笔记（管理员）—— 统一走 NoteService，补发布副作用（不重发积分）
+     */
+    @Override
+    @CacheEvict(value = {"noteList", "noteDetail"}, allEntries = true)
+    public boolean approveNote(Long id) {
+        Note note = this.getById(id);
+        if (note == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记不存在");
+        }
+        boolean wasPublished = "published".equals(note.getStatus());
+        note.setStatus("published");
+        if (!wasPublished) {
+            note.setPublishTime(new Date());
+        }
+        boolean result = this.updateById(note);
+        if (result && !wasPublished) {
+            // 审核通过：补布隆/ES/content_count/知识地图/标签关联，但不重发积分（举报转 pending 前已发过）
+            processNoteTags(note);
+            publishSideEffects(note, false);
+        }
+        return result;
+    }
+
+    /**
+     * 拒绝笔记（管理员）—— 若原 published 则从 ES 移除并 content_count-1
+     */
+    @Override
+    @CacheEvict(value = {"noteList", "noteDetail"}, allEntries = true)
+    public boolean rejectNote(Long id) {
+        Note note = this.getById(id);
+        if (note == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记不存在");
+        }
+        boolean wasPublished = "published".equals(note.getStatus());
+        note.setStatus("rejected");
+        note.setUpdateTime(new Date());
+        boolean result = this.updateById(note);
+        if (result && wasPublished) {
+            // 原发布态被拒：从 ES 移除并星球内容计数-1、知识地图移除节点
+            try { esSearchService.deleteNote(id); }
+            catch (Exception e) { log.warn("ES 删除失败: noteId={}", id, e); }
+            if (note.getStarId() != null) {
+                try { starMapper.updateContentCount(note.getStarId(), -1); }
+                catch (Exception e) { log.warn("星球内容计数-1失败: noteId={}", id, e); }
+            }
+            try { knowledgeService.removeNodeFromNote(note.getStarId(), id); }
+            catch (Exception e) { log.warn("知识地图节点移除失败: noteId={}", id, e); }
+        }
+        return result;
+    }
+
+    /**
+     * 查询当前用户的笔记（草稿箱/我的内容，按 status 筛选）
+     */
+    @Override
+    public PageResult<Note> getMyNotes(Long userId, String status, Integer page, Integer pageSize) {
+        if (userId == null || userId <= 0) {
+            throw new BusinessException(ErrorCode.NOT_LOGIN);
+        }
+        int pageNum = page == null || page < 1 ? 1 : page;
+        int size = pageSize == null || pageSize < 1 ? 10 : Math.min(pageSize, 50);
+
+        QueryWrapper<Note> wrapper = new QueryWrapper<>();
+        wrapper.eq("author_id", userId);
+        if (StringUtils.isNotBlank(status)) {
+            wrapper.eq("status", status);
+        }
+        wrapper.orderByDesc("update_time");
+        IPage<Note> result = this.page(new Page<>(pageNum, size), wrapper);
+
+        List<Note> records = result.getRecords();
+        fillAuthorInfoBatch(records);
+        records.forEach(this::processNoteTags);
+        return new PageResult<>(result.getTotal(), result.getCurrent(), result.getSize(), records);
+    }
+
+    /**
+     * 发布定时笔记（由 ScheduledPublishTask 到点调用）：转 published + 触发发布副作用（含积分，首次发布）
+     */
+    @Override
+    @CacheEvict(value = {"noteList", "noteDetail"}, allEntries = true)
+    public boolean publishScheduledNote(Long noteId) {
+        Note note = this.getById(noteId);
+        if (note == null) {
+            log.warn("定时发布：笔记不存在 noteId={}", noteId);
+            return false;
+        }
+        if (!"scheduled".equals(note.getStatus())) {
+            log.debug("定时发布：笔记非 scheduled 态，跳过 noteId={} status={}", noteId, note.getStatus());
+            return false;
+        }
+        note.setStatus("published");
+        note.setPublishTime(new Date());
+        boolean result = this.updateById(note);
+        if (result) {
+            processNoteTags(note);
+            publishSideEffects(note, true);
+        }
+        return result;
+    }
+
+    /**
+     * 获取已发布笔记详情（多级缓存，全员共享 published 内容）
+     * 非 published 抛 NOT_FOUND（不缓存）；布隆过滤器防穿透
+     */
+    @Override
+    @Cacheable(value = "noteDetail", key = "#id", unless = "#result == null")
+    public Note getNoteDetailPublished(Long id) {
+        if (id == null || id <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记ID不能为空");
+        }
+        // 布隆过滤器拦截防穿透（published 笔记才在布隆里）
+        if (!noteBloomFilter.contains(id)) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "笔记不存在");
+        }
+        Note note = this.getById(id);
+        if (note == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "笔记不存在");
+        }
+        // 只缓存 published，非 published 抛异常不缓存（draft/pending/rejected 不进缓存）
+        if (!"published".equals(note.getStatus())) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "笔记不存在");
+        }
+        processNoteTags(note);
+        fillAuthorInfo(note);
+        if (note.getPublishTime() != null) {
+            note.setPublishTimestamp(note.getPublishTime().getTime());
+        }
+        return note;
+    }
+
+    /**
+     * 标记笔记为待审核（举报触发），清 noteDetail/noteList 缓存
+     */
+    @Override
+    @CacheEvict(value = {"noteList", "noteDetail"}, allEntries = true)
+    public boolean markNotePending(Long id) {
+        Note update = new Note();
+        update.setId(id);
+        update.setStatus("pending");
+        return this.updateById(update);
     }
 }

@@ -13,6 +13,7 @@ import com.example.usercenter.mapper.*;
 import com.example.usercenter.model.domain.Comment;
 import com.example.usercenter.model.domain.LikeRecord;
 import com.example.usercenter.model.domain.Note;
+import com.example.usercenter.model.domain.Report;
 import com.example.usercenter.model.domain.Stats;
 import com.example.usercenter.model.domain.User;
 import com.example.usercenter.service.StatsService;
@@ -56,6 +57,50 @@ public class StatsController extends BaseController {
 
     @Resource
     private UserMapper userMapper;
+
+    @Resource
+    private ReportMapper reportMapper;
+
+    /**
+     * 平台数据总览（管理端首页）
+     */
+    @GetMapping("/overview")
+    @Operation(summary = "平台数据总览（总用户/总笔记/总评论/总资源/今日新增笔记/待审核举报数）")
+    public BaseResponse<Map<String, Object>> getOverview() {
+        requireAdmin();
+        Map<String, Object> result = new HashMap<>();
+
+        // 总用户数（@TableLogic 自动过滤已删除）
+        result.put("totalUsers", userMapper.selectCount(null));
+
+        // 已发布笔记数
+        QueryWrapper<Note> publishedNoteQuery = new QueryWrapper<>();
+        publishedNoteQuery.eq("status", "published");
+        result.put("totalNotes", noteMapper.selectCount(publishedNoteQuery));
+
+        // 总评论数
+        result.put("totalComments", commentMapper.selectCount(null));
+
+        // 总资源数
+        result.put("totalResources", resourceMapper.selectCount(null));
+
+        // 今日新增笔记数（publish_time >= 今日 0 点）
+        Calendar cal = Calendar.getInstance();
+        cal.set(Calendar.HOUR_OF_DAY, 0);
+        cal.set(Calendar.MINUTE, 0);
+        cal.set(Calendar.SECOND, 0);
+        cal.set(Calendar.MILLISECOND, 0);
+        QueryWrapper<Note> todayNoteQuery = new QueryWrapper<>();
+        todayNoteQuery.ge("publish_time", cal.getTime());
+        result.put("todayNewNotes", noteMapper.selectCount(todayNoteQuery));
+
+        // 待审核举报数
+        QueryWrapper<Report> pendingReportQuery = new QueryWrapper<>();
+        pendingReportQuery.eq("status", "pending");
+        result.put("pendingReports", reportMapper.selectCount(pendingReportQuery));
+
+        return ResultUtils.success(result);
+    }
 
     /**
      * 获取数据统计概览

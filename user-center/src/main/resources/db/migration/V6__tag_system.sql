@@ -1,3 +1,5 @@
+USE yiya;
+
 -- V6: 标签体系（标签实体 + 笔记-标签关联）
 -- 全局共享，不走多租户（已在 TenantInterceptor.IGNORE_TABLES 忽略）
 -- 方案B：note.tags JSON 保留（兼容现有查询），关联表用于标签广场聚合与按标签检索

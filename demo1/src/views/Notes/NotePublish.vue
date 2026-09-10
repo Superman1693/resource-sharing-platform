@@ -3,8 +3,9 @@ import { reactive, ref, computed, onMounted, onBeforeUnmount, watch, defineAsync
 import { useRouter, useRoute } from 'vue-router'
 import { message as antMessage } from 'ant-design-vue'
 import { FileTextOutlined, QuestionCircleOutlined, BookOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons-vue'
-import { createNote, updateNote, getNoteDetail, getMyStars, uploadImage, suggestTags } from '../../utils/api'
+import { createNote, updateNote, getMyNoteDetail, getMyStars, uploadImage, suggestTags } from '../../utils/api'
 import { CATEGORY_OPTIONS } from '../../utils/constant'
+import dayjs from 'dayjs'
 
 // 异步加载编辑器组件
 const VditorEditor = defineAsyncComponent(() =>
@@ -48,6 +49,11 @@ const formState = reactive({
   coverImage: '',
   starId: undefined,
 })
+
+// 发布方式：publish-立即发布 / draft-保存草稿 / schedule-定时发布
+const publishMode = ref('publish')
+// 定时发布时间（dayjs 对象）
+const scheduleTime = ref(null)
 
 const starList = ref([])
 const loadStarList = async () => {
@@ -155,7 +161,7 @@ const loadNoteDetail = async () => {
   const id = route.query.id
   if (!id) return
   try {
-    const res = await getNoteDetail(id)
+    const res = await getMyNoteDetail(id)
     if (res.code === 0 && res.data) {
       isEdit.value = true
       Object.assign(formState, {
@@ -166,7 +172,18 @@ const loadNoteDetail = async () => {
         summary: res.data.summary || '',
         content: res.data.content || '',
         coverImage: res.data.coverImage || '',
+        starId: res.data.starId || undefined,
       })
+      // 回填发布方式
+      const st = res.data.status
+      if (st === 'draft') {
+        publishMode.value = 'draft'
+      } else if (st === 'scheduled') {
+        publishMode.value = 'schedule'
+        scheduleTime.value = res.data.publishTime ? dayjs(res.data.publishTime) : null
+      } else {
+        publishMode.value = 'publish'
+      }
     }
   } catch (err) {
     console.error('加载笔记详情失败', err)
@@ -178,6 +195,13 @@ const handleSubmit = async () => {
   try {
     await formRef.value.validate()
     submitting.value = true
+    // 定时发布需校验未来时间
+    if (publishMode.value === 'schedule') {
+      if (!scheduleTime.value || scheduleTime.value.isBefore(dayjs())) {
+        antMessage.warning('请选择未来的发布时间')
+        return
+      }
+    }
     const noteData = {
       title: formState.title,
       contentType: formState.contentType,
@@ -187,6 +211,11 @@ const handleSubmit = async () => {
       content: formState.content,
       coverImage: formState.coverImage,
       starId: formState.starId || null,
+      status: publishMode.value === 'draft' ? 'draft'
+        : publishMode.value === 'schedule' ? 'scheduled' : 'published',
+    }
+    if (publishMode.value === 'schedule') {
+      noteData.publishTime = scheduleTime.value.toDate()
     }
     let res
     if (isEdit.value && route.query.id) {
@@ -400,15 +429,31 @@ onMounted(() => {
           </Suspense>
         </a-form-item>
 
+        <a-form-item label="发布方式">
+          <a-radio-group v-model:value="publishMode" button-style="solid">
+            <a-radio-button value="publish">立即发布</a-radio-button>
+            <a-radio-button value="draft">保存草稿</a-radio-button>
+            <a-radio-button value="schedule">定时发布</a-radio-button>
+          </a-radio-group>
+          <div v-if="publishMode === 'schedule'" style="margin-top: 8px">
+            <a-date-picker
+              v-model:value="scheduleTime"
+              show-time
+              format="YYYY-MM-DD HH:mm"
+              placeholder="选择发布时间（需在未来）"
+              style="width: 260px"
+            />
+          </div>
+        </a-form-item>
+
         <a-form-item>
           <a-space>
-            <a-button type="primary" :loading="submitting" @click="handleSubmit">发布</a-button>
-            <a-button @click="saveDraft" v-if="!isEdit">
-              <SaveOutlined /> 保存草稿
+            <a-button type="primary" :loading="submitting" @click="handleSubmit">
+              {{ publishMode === 'draft' ? '保存草稿' : publishMode === 'schedule' ? '定时发布' : '立即发布' }}
             </a-button>
             <a-button @click="handleReset">重置</a-button>
             <a-button @click="router.push(successRedirectPath)">取消</a-button>
-            <span v-if="draftSaved" style="color: #52c41a; font-size: 12px">✓ 草稿已保存</span>
+            <span v-if="draftSaved" style="color: #52c41a; font-size: 12px">✓ 草稿已自动保存</span>
           </a-space>
         </a-form-item>
 

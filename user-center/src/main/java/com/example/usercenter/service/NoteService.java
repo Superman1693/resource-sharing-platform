@@ -22,12 +22,14 @@ public interface NoteService extends IService<Note> {
     PageResult<Note> getNoteList(NoteQueryRequest request);
 
     /**
-     * 获取笔记详情
+     * 获取笔记详情（带权限过滤：非作者非管理员访问非 published 笔记抛 NOT_FOUND）
      *
-     * @param id 笔记ID
-     * @return 笔记对象，不存在时返回 null
+     * @param id      笔记ID
+     * @param userId  当前用户ID（可空，匿名访客）
+     * @param isAdmin 是否管理员
+     * @return 笔记对象，不存在时抛异常
      */
-    Note getNoteDetail(Long id);
+    Note getNoteDetail(Long id, Long userId, boolean isAdmin);
 
     /**
      * 创建笔记
@@ -97,4 +99,45 @@ public interface NoteService extends IService<Note> {
      * @param noteId 笔记ID
      */
     void asyncIncrementCommentCount(Long noteId);
+
+    /**
+     * 审核通过笔记（管理员）—— 统一走 NoteService，同步 ES/布隆/content_count/积分/publish_time
+     * @param id 笔记ID
+     */
+    boolean approveNote(Long id);
+
+    /**
+     * 拒绝笔记（管理员）—— 若原 published 则从 ES 移除并 content_count-1
+     * @param id 笔记ID
+     */
+    boolean rejectNote(Long id);
+
+    /**
+     * 查询当前用户的笔记（草稿箱/我的内容，按 status 筛选）
+     * @param userId 用户ID
+     * @param status 状态筛选（draft/scheduled/published/pending/rejected），为 null 查全部
+     * @param page 页码
+     * @param pageSize 每页数量
+     */
+    PageResult<Note> getMyNotes(Long userId, String status, Integer page, Integer pageSize);
+
+    /**
+     * 发布定时笔记（由 ScheduledPublishTask 到点调用）：转 published + 触发发布副作用（含积分）
+     * @param noteId 笔记ID
+     */
+    boolean publishScheduledNote(Long noteId);
+
+    /**
+     * 获取已发布笔记详情（多级缓存 @Cacheable，全员共享 published 内容）。
+     * 非 published 抛 NOT_FOUND（不缓存）；布隆过滤器防穿透。
+     * 付费星球脱敏由 Controller 层做副本，不污染此缓存。
+     * @param id 笔记ID
+     */
+    Note getNoteDetailPublished(Long id);
+
+    /**
+     * 标记笔记为待审核（举报触发），同步清 noteDetail/noteList 缓存
+     * @param id 笔记ID
+     */
+    boolean markNotePending(Long id);
 }

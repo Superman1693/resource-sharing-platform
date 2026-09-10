@@ -7,7 +7,7 @@ import LikeButton from '../../components/LikeButton.vue'
 import FollowButton from '../../components/FollowButton.vue'
 import UserAvatar from '../../components/UserAvatar.vue'
 import { useUserStore } from '../../store/userLogin'
-import { getNoteDetail, addComment, replyComment, likeNote, likeComment, getCommentList, reportComment, reportNote, getNoteList, updateNote, toggleCollectNote, checkCollected, searchPublicUsers } from '../../utils/api'
+import { getNoteDetail, addComment, replyComment, likeNote, likeComment, getCommentList, reportComment, reportNote, getNoteList, updateNote, toggleCollectNote, checkCollected, searchPublicUsers, getColumnDetail } from '../../utils/api'
 import { CATEGORY_TEXT } from '../../utils/constant'
 import { formatDateTime } from '../../utils/dateUtils'
 
@@ -62,12 +62,16 @@ const noteDetail = ref({
   author: '',
   authorAvatar: '',
   starId: null,
+  collectionId: null,
   locked: false,
   viewCount: 0,
   likeCount: 0,
   publishTime: '',
   coverImage: '',
 })
+
+// 所属专栏标题（笔记归属专栏时异步查询填充）
+const collectionTitle = ref('')
 const getCategoryLabel = (value) => CATEGORY_TEXT[value] || '未知分类'
 
 // 跳转作者个人主页（自己的头像跳个人中心编辑页，避免被个人主页重定向回首页）
@@ -108,6 +112,25 @@ const fetchRecommendations = async () => {
 
 const viewRecommend = (note) => {
   router.push(`/user/noteDetail/${note.id}`)
+}
+
+// 查询所属专栏标题（笔记归属专栏时展示）
+const fetchCollectionTitle = async (collectionId) => {
+  try {
+    const res = await getColumnDetail(collectionId)
+    if (res.code === 0 && res.data) {
+      collectionTitle.value = res.data.title || ''
+    }
+  } catch (_) {
+    collectionTitle.value = ''
+  }
+}
+
+// 跳转所属专栏详情
+const goCollection = () => {
+  if (noteDetail.value.collectionId) {
+    router.push(`/user/column/${noteDetail.value.collectionId}`)
+  }
 }
 
 // 私信作者：跳转到私信中心并直接打开与作者的会话
@@ -419,6 +442,11 @@ const fetchNoteDetail = async () => {
     const res = await getNoteDetail(id)
     if (res.code === 0 && res.data) {
       noteDetail.value = res.data
+      // 若笔记归属专栏，异步查专栏标题用于展示
+      collectionTitle.value = ''
+      if (res.data.collectionId) {
+        fetchCollectionTitle(res.data.collectionId)
+      }
       // 已登录用户初始化收藏态
       if (userStore.isLogin) {
         try {
@@ -671,6 +699,17 @@ onMounted(() => {
             <a class="stat-item report-btn" @click="handleReportNote">举报</a>
           </div>
         </div>
+      </div>
+      <!-- 所属专栏：笔记归属某专栏时展示，点击跳专栏详情 -->
+      <div
+        v-if="collectionTitle"
+        style="display:flex;align-items:center;gap:8px;padding:10px 0;margin:4px 0 12px;border-top:1px solid #f0f0f0;border-bottom:1px solid #f0f0f0;cursor:pointer;color:#6366f1;font-size:14px"
+        @click="goCollection"
+      >
+        <OrderedListOutlined />
+        <span style="color:#999">所属专栏</span>
+        <span style="font-weight:600">{{ collectionTitle }}</span>
+        <RightOutlined style="font-size:12px" />
       </div>
       <!-- 封面图：语雀风格适配 -->
       <div v-if="noteDetail.coverImage" class="note-cover">

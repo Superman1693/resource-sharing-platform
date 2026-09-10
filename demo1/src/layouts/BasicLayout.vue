@@ -12,6 +12,9 @@ import {
   FullscreenOutlined,
   AliwangwangOutlined,
   StarOutlined,
+  DashboardOutlined,
+  AlertOutlined,
+  StopOutlined,
 } from '@ant-design/icons-vue'
 import AIFloatWindow from '../components/AIFloatWindow.vue'
 import { useRouter } from 'vue-router'
@@ -129,6 +132,20 @@ const handleLogout = async () => {
             @click="(e) => $router.push(e.key)"
             class="nav-menu"
           >
+            <a-menu-item key="/main/dashboard">
+              <DashboardOutlined class="menu-icon" />
+              <span>总览</span>
+            </a-menu-item>
+
+            <a-sub-menu key="operation">
+              <template #title>
+                <AlertOutlined class="menu-icon" />
+                <span>运营管理</span>
+              </template>
+              <a-menu-item key="/main/reportManage">举报管理</a-menu-item>
+              <a-menu-item key="/main/sensitiveWord">敏感词</a-menu-item>
+            </a-sub-menu>
+
             <a-sub-menu key="content">
               <template #title>
                 <FileTextOutlined class="menu-icon" />

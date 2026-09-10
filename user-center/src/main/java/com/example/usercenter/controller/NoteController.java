@@ -20,6 +20,7 @@ import com.example.usercenter.mapper.StarMemberMapper;
 import com.example.usercenter.service.HotRankService;
 import com.example.usercenter.service.NotificationService;
 import com.example.usercenter.service.NoteService;
+import com.example.usercenter.service.ReportService;
 import com.example.usercenter.service.UserService;
 import com.example.usercenter.utils.UserContext;
 import jakarta.annotation.Resource;
@@ -61,6 +62,9 @@ public class NoteController extends BaseController {
     @Resource
     private StarMemberMapper starMemberMapper;
 
+    @Resource
+    private ReportService reportService;
+
     /**
      * 获取笔记列表（免登录浏览）
      */
@@ -82,34 +86,36 @@ public class NoteController extends BaseController {
     }
 
     /**
-     * 获取笔记详情（免登录浏览）
+     * 获取笔记详情（免登录浏览；非作者非管理员访问非 published 笔记会被 NoteService 拦截）
      */
     @GetMapping("/{id}")
     public BaseResponse<Note> getNoteDetail(@PathVariable Long id, HttpServletRequest request) {
-        // 浏览笔记详情不需要登录
-
         if (id == null || id <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记ID不能为空");
         }
 
-        Note note = noteService.getNoteDetail(id);
+        // 解析当前登录用户（可空，匿名访客）
+        LoginUserDTO loginUser = null;
+        try {
+            loginUser = getLoginUser();
+        } catch (Exception ignored) {
+        }
+        Long userId = loginUser == null ? null : loginUser.getUserId();
+        boolean isAdmin = loginUser != null && Integer.valueOf(1).equals(loginUser.getUserRole());
+
+        // 走多级缓存（published only，非 published 抛 NOT_FOUND；作者编辑 draft 走 /note/my/{id}）
+        Note note = noteService.getNoteDetailPublished(id);
 
         // 增加浏览量
         noteService.increaseViewCount(id);
 
         // 付费星球内容门禁：未加入该星球的用户只能看到标题等基础信息
-        // （getNoteDetail 结果有缓存，脱敏必须基于副本，避免污染缓存）
         if (note.getStarId() != null) {
             Star star = starMapper.selectById(note.getStarId());
             if (star != null && star.getPrice() != null && star.getPrice() > 0) {
                 boolean canRead = false;
-                LoginUserDTO loginUser = null;
-                try {
-                    loginUser = getLoginUser();
-                } catch (Exception ignored) {
-                }
                 if (loginUser != null) {
-                    if (Integer.valueOf(1).equals(loginUser.getUserRole())
+                    if (isAdmin
                             || Objects.equals(star.getOwnerId(), loginUser.getUserId())
                             || Objects.equals(note.getAuthorId(), loginUser.getUserId())) {
                         canRead = true;
@@ -129,6 +135,23 @@ public class NoteController extends BaseController {
             }
         }
 
+        return ResultUtils.success(note);
+    }
+
+    /**
+     * 我的笔记详情（作者编辑回填用，返回任意状态，无缓存，需登录）
+     */
+    @GetMapping("/my/{id}")
+    @LoginRequired
+    public BaseResponse<Note> getMyNoteDetail(@PathVariable Long id, HttpServletRequest request) {
+        if (id == null || id <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记ID不能为空");
+        }
+        LoginUserDTO loginUser = getLoginUser();
+        Long userId = loginUser.getUserId();
+        boolean isAdmin = Integer.valueOf(1).equals(loginUser.getUserRole());
+        // 走含权限校验的查询（作者可看自己任意状态，无缓存）
+        Note note = noteService.getNoteDetail(id, userId, isAdmin);
         return ResultUtils.success(note);
     }
 
@@ -259,8 +282,8 @@ public class NoteController extends BaseController {
     @PostMapping("/report/{id}")
     @LoginRequired
     @PreventDuplicate(waitTime = 0, leaseTime = 5, message = "操作过于频繁，请稍后再试")
-    public BaseResponse<Boolean> reportNote(@PathVariable Long id, HttpServletRequest request) {
-        getLoginUser();
+    public BaseResponse<Boolean> reportNote(@PathVariable Long id, @RequestBody(required = false) Map<String, String> body, HttpServletRequest request) {
+        Long reporterId = UserContext.get().getUserId();
 
         if (id == null || id <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记ID不能为空");
@@ -271,11 +294,25 @@ public class NoteController extends BaseController {
             throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "笔记不存在");
         }
 
-        Note update = new Note();
-        update.setId(id);
-        update.setStatus("pending");
-        boolean result = noteService.updateById(update);
+        String reason = body == null ? null : body.get("reason");
+        // 落库举报记录
+        reportService.create(reporterId, "note", id, reason);
+        // 标记 pending 并清 noteDetail/noteList 缓存（走 service 的 @CacheEvict）
+        boolean result = noteService.markNotePending(id);
         return ResultUtils.success(result);
+    }
+
+    /**
+     * 我的笔记（草稿箱/我的内容，按 status 筛选，需登录）
+     */
+    @GetMapping("/my")
+    @LoginRequired
+    public BaseResponse<PageResult<Note>> getMyNotes(
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "10") Integer pageSize) {
+        Long userId = UserContext.get().getUserId();
+        return ResultUtils.success(noteService.getMyNotes(userId, status, page, pageSize));
     }
 
     /**

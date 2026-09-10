@@ -1,3 +1,5 @@
+USE yiya;
+
 -- V5: 笔记收藏（单层，无分组）
 -- 用户级收藏关系，不走星球多租户（已在 TenantInterceptor.IGNORE_TABLES 忽略）
 CREATE TABLE IF NOT EXISTS `note_collection` (

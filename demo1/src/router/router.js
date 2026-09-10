@@ -29,6 +29,9 @@ const UserActivity = () => import('../views/Stats/UserActivity.vue')
 const StarList = () => import('../views/Stars/StarList.vue')
 const StarDetail = () => import('../views/Stars/StarDetail.vue')
 const StarManage = () => import('../views/Stars/StarManage.vue')
+const Dashboard = () => import('../views/Admin/Dashboard.vue')
+const ReportManage = () => import('../views/Admin/ReportManage.vue')
+const SensitiveWord = () => import('../views/Admin/SensitiveWord.vue')
 const UserHome = () => import('../views/User/UserHome.vue')
 const ResumeShowcase = () => import('../views/User/ResumeShowcase.vue')
 const AdminUser = () => import('../views/AdminUser.vue')
@@ -42,6 +45,8 @@ const TagDetail = () => import('../views/Tags/TagDetail.vue')
 const DataDashboard = () => import('../views/User/DataDashboard.vue')
 const MyContent = () => import('../views/User/MyContent.vue')
 const LearningPath = () => import('../views/User/LearningPath.vue')
+const ColumnDetail = () => import('../views/Stars/ColumnDetail.vue')
+const ColumnManage = () => import('../views/Stars/ColumnManage.vue')
 const OAuthCallback = () => import('../views/OAuthCallback.vue')
 const ResetPassword = () => import('../views/ResetPassword.vue')
 
@@ -63,7 +68,10 @@ const router = createRouter({
       component: BasicLayout,
       meta: { requiresAuth: true, requiresAdmin: true },
       children: [
-        { path: '', redirect: '/main/contentManage' },
+        { path: '', redirect: '/main/dashboard' },
+        { path: 'dashboard', name: 'Dashboard', component: Dashboard },
+        { path: 'reportManage', name: 'ReportManage', component: ReportManage },
+        { path: 'sensitiveWord', name: 'SensitiveWord', component: SensitiveWord },
         { path: 'contentManage', name: 'ContentManage', component: ContentManage },
         { path: 'contentPublish', name: 'ContentPublish', component: ContentPublish },
         { path: 'noteDetail/:id', name: 'NoteDetail', component: NoteDetail },
@@ -109,6 +117,8 @@ const router = createRouter({
         { path: 'followList', name: 'FollowList', component: FollowList, meta: { requiresAuth: true, title: '关注列表' } },
         { path: 'dashboard', name: 'DataDashboard', component: DataDashboard, meta: { requiresAuth: true, title: '数据仪表盘' } },
         { path: 'myContent', name: 'MyContent', component: MyContent, meta: { requiresAuth: true, title: '我的内容' } },
+        { path: 'column/:id', name: 'ColumnDetail', component: ColumnDetail },
+        { path: 'columnManage', name: 'ColumnManage', component: ColumnManage, meta: { requiresAuth: true, title: '我的专栏' } },
         { path: 'learningPath', name: 'LearningPath', component: LearningPath, meta: { requiresAuth: true, title: '学习路径' } },
         { path: 'user/:userId', name: 'UserDetail', component: UserProfile },
       ]
@@ -152,7 +162,7 @@ router.beforeEach((to, from, next) => {
 
   // 已登录用户访问登录页，按角色跳转（禁止循环重定向）
   if (to.path === '/login' && isAuthenticated) {
-    const redirectTarget = isAdmin ? '/main/contentManage' : '/user/home'
+    const redirectTarget = isAdmin ? '/main/dashboard' : '/user/home'
     // 仅当目标不等于当前页面时才跳转，防止循环
     if (redirectTarget !== from.path) {
       next(redirectTarget)

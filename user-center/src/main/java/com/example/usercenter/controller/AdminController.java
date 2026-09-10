@@ -8,6 +8,7 @@ import com.example.usercenter.common.ResultUtils;
 import com.example.usercenter.exception.BusinessException;
 import com.example.usercenter.mapper.*;
 import com.example.usercenter.model.domain.*;
+import com.example.usercenter.service.NoteService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
@@ -29,6 +30,8 @@ public class AdminController extends BaseController {
     @Resource private AdminLogMapper adminLogMapper;
     @Resource
     private StarMapper starMapper;
+    @Resource
+    private NoteService noteService;
     /** 封禁用户 */
     @PostMapping("/user/ban/{id}")
     public BaseResponse<Boolean> banUser(@PathVariable Long id) {
@@ -71,32 +74,18 @@ public class AdminController extends BaseController {
         return ResultUtils.success(result);
     }
 
-    /** 审核通过笔记 */
+    /** 审核通过笔记（走 NoteService，统一同步 ES/布隆/content_count/积分/publish_time） */
     @PostMapping("/note/approve/{id}")
     public BaseResponse<Boolean> approveNote(@PathVariable Long id) {
-        Note note = noteMapper.selectById(id);
-        if (note == null) throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记不存在");
-
-        Note update = new Note();
-        update.setId(id);
-        update.setStatus("published");
-        noteMapper.updateById(update);
-
+        noteService.approveNote(id);
         saveAdminLog(getLoginUser().getUserId(), id, "approve", "note", "审核通过笔记");
         return ResultUtils.success(true);
     }
 
-    /** 拒绝笔记 */
+    /** 拒绝笔记（走 NoteService，统一从 ES 移除并维护 content_count） */
     @PostMapping("/note/reject/{id}")
     public BaseResponse<Boolean> rejectNote(@PathVariable Long id) {
-        Note note = noteMapper.selectById(id);
-        if (note == null) throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记不存在");
-
-        Note update = new Note();
-        update.setId(id);
-        update.setStatus("rejected");
-        noteMapper.updateById(update);
-
+        noteService.rejectNote(id);
         saveAdminLog(getLoginUser().getUserId(), id, "reject", "note", "拒绝笔记");
         return ResultUtils.success(true);
     }

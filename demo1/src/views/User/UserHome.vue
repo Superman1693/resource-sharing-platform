@@ -5,7 +5,7 @@ import {
   EyeOutlined, LikeOutlined, FileTextOutlined, DownloadOutlined,
   BookOutlined, TrophyOutlined, ArrowRightOutlined,
   FilePdfOutlined, VideoCameraOutlined, CodeOutlined, FolderOutlined,
-  TeamOutlined
+  TeamOutlined, GiftOutlined
 } from '@ant-design/icons-vue'
 import TodayKnowledgeCard from '../../components/TodayKnowledgeCard.vue'
 import ContributionHeatmap from '../../components/ContributionHeatmap.vue'
@@ -14,8 +14,10 @@ import UserAvatar from '../../components/UserAvatar.vue'
 import { useUserStore } from '../../store/userLogin'
 import {
   getNoteList, getResourceList, getPersonalStats,
-  getContributionData, getUserGrowth, getFollowList, getStarFeed
+  getContributionData, getUserGrowth, getFollowList, getStarFeed,
+  signIn, checkSignedToday, getPointsAccount
 } from '../../utils/api'
+import { message } from 'ant-design-vue'
 import { CATEGORY_TEXT_SHORT } from '../../utils/constant'
 import { formatDate } from '../../utils/dateUtils'
 
@@ -33,9 +35,38 @@ const growthData = ref(null)
 const recommendedUsers = ref([])
 const starFeed = ref([])
 
+// ===== 签到积分 =====
+const signedToday = ref(false)
+const signing = ref(false)
+const pointsBalance = ref(0)
+
 // 星球动态点击跳转（feed 里是 noteId 字段）
 const viewFeedNote = (item) => router.push(`/user/noteDetail/${item.noteId}`)
 const viewStar = (item) => router.push(`/user/starDetail/${item.starId}`)
+
+// 签到
+const handleSignIn = async () => {
+  if (signedToday.value || signing.value) return
+  signing.value = true
+  try {
+    const res = await signIn()
+    if (res.code === 0 && res.data) {
+      if (res.data.signed) {
+        signedToday.value = true
+        if (res.data.balance != null) pointsBalance.value = res.data.balance
+        message.success('签到成功，积分已入账')
+      } else {
+        // 今日已签（兜底）
+        signedToday.value = true
+        message.info('今日已签到')
+      }
+    }
+  } catch (_) {
+    // 错误由 request 拦截器统一处理
+  } finally {
+    signing.value = false
+  }
+}
 
 // 格式化 feed 时间
 const formatFeedTime = (t) => {
@@ -119,6 +150,8 @@ onMounted(async () => {
       promises.push(getUserGrowth())
       promises.push(getFollowList({ page: 1, pageSize: 20 }))
       promises.push(getStarFeed(8).catch(() => null))
+      promises.push(checkSignedToday())
+      promises.push(getPointsAccount())
     }
 
     const results = await Promise.allSettled(promises)
@@ -151,6 +184,13 @@ onMounted(async () => {
 
       const feedRes = results[6]?.status === 'fulfilled' ? results[6].value : null
       starFeed.value = Array.isArray(feedRes?.data) ? feedRes.data : []
+
+      // 签到状态 + 积分账户
+      const signedRes = results[7]?.status === 'fulfilled' ? results[7].value : null
+      signedToday.value = !!signedRes?.data?.signed
+
+      const accountRes = results[8]?.status === 'fulfilled' ? results[8].value : null
+      pointsBalance.value = accountRes?.data?.balance || 0
     }
   } catch (_) {
     // 静默处理
@@ -224,6 +264,28 @@ onUnmounted(() => io?.disconnect())
             <h2 class="section-title">学习看板</h2>
           </div>
           <a class="section-more" @click="router.push('/user/dashboard')">详细数据 →</a>
+        </div>
+
+        <!-- 每日签到 -->
+        <div class="sign-card" data-reveal>
+          <div class="sign-left">
+            <div class="sign-icon"><GiftOutlined /></div>
+            <div class="sign-text">
+              <span class="sign-title">每日签到</span>
+              <span class="sign-sub">{{ signedToday ? '今日已签到，明天再来吧' : '签到领积分，连续签到奖励更多' }}</span>
+            </div>
+          </div>
+          <div class="sign-right">
+            <span class="sign-balance">当前 {{ pointsBalance }} 积分</span>
+            <button
+              class="sign-btn"
+              :class="{ 'is-signed': signedToday }"
+              :disabled="signedToday || signing"
+              @click="handleSignIn"
+            >
+              {{ signedToday ? '已签到 ✓' : (signing ? '签到中…' : '立即签到') }}
+            </button>
+          </div>
         </div>
 
         <!-- 统计卡片 -->
@@ -680,6 +742,102 @@ onUnmounted(() => io?.disconnect())
 .dashboard-section {
   padding: 88px 0 64px;
   background: var(--color-bg);
+}
+
+/* ===== 每日签到卡 ===== */
+.sign-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px;
+  background: var(--color-bg-card, #fff);
+  border: 1px solid var(--color-border-light, #f1f5f9);
+  border-left: 4px solid var(--color-accent, #6366f1);
+  border-radius: var(--radius-lg, 12px);
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.04));
+  transition: box-shadow 0.25s ease, transform 0.25s ease;
+}
+
+.sign-card:hover {
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.08);
+  transform: translateY(-1px);
+}
+
+.sign-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.sign-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md, 8px);
+  background: var(--color-accent-glow, rgba(99, 102, 241, 0.1));
+  color: var(--color-accent, #6366f1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  flex-shrink: 0;
+}
+
+.sign-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sign-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-primary, #1e293b);
+}
+
+.sign-sub {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted, #94a3b8);
+}
+
+.sign-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.sign-balance {
+  font-size: 0.875rem;
+  color: var(--color-text-secondary, #64748b);
+  font-weight: 500;
+}
+
+.sign-btn {
+  padding: 0 24px;
+  height: 40px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--color-accent, #6366f1), var(--color-accent-light, #818cf8));
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--duration-fast, 0.15s);
+  font-family: var(--font-body);
+}
+
+.sign-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(99, 102, 241, 0.3);
+}
+
+.sign-btn.is-signed,
+.sign-btn:disabled {
+  background: var(--color-border, #e2e8f0);
+  color: var(--color-text-muted, #94a3b8);
+  cursor: not-allowed;
 }
 
 .stats-grid {

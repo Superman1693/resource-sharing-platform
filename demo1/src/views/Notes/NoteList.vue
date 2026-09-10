@@ -5,7 +5,7 @@ import { message as antMessage } from 'ant-design-vue'
 import { EyeOutlined, MessageOutlined, LikeOutlined, ThunderboltOutlined } from '@ant-design/icons-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { getNoteList, searchNotes } from '../../utils/api'
+import { getNoteList, searchNotes, getRecommendList } from '../../utils/api'
 import { exportAsMarkdown, exportAsPDF, exportAsZip } from '../../utils/exportUtils'
 import { DownloadOutlined } from '@ant-design/icons-vue'
 import { CATEGORY_OPTIONS, CATEGORY_TEXT } from '../../utils/constant'
@@ -34,6 +34,7 @@ const contentTypeOptions = [
 ]
 
 const sortOptions = [
+  { label: '推荐', value: 'recommend' },
   { label: '热度排序', value: 'hot' },
   { label: '最新排序', value: 'latest' },
 ]
@@ -89,6 +90,18 @@ const fetchNoteList = async () => {
   usedDbFallback.value = false
   try {
     let data = {}
+    // 推荐排序：走个性化推荐接口（登录走标签偏好，未登录走热门兜底，不分页）
+    if (filterForm.sortType === 'recommend' && !hasKeyword) {
+      const size = pagination.pageSize
+      const res = await getRecommendList(size)
+      const records = Array.isArray(res.data) ? res.data : []
+      noteList.value = records
+      pagination.total = records.length
+      records.forEach(async (item) => {
+        summaryHtmlCache.value[item.id] = await renderSummaryAsync(item)
+      })
+      return
+    }
     if (hasKeyword) {
       const keyword = filterForm.keyword.trim()
       const res = await searchNotes({

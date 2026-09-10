@@ -5,7 +5,10 @@
 
     <!-- 带条件的分页查询（含置顶排序 + 关键词相关性排序） -->
     <select id="selectPageWithCondition" resultType="com.example.usercenter.model.domain.Note">
-        SELECT *
+        SELECT id, title, category, content_type, summary, author, author_id,
+               view_count, comment_count, like_count, status, publish_time,
+               cover_image, tags, star_id, collection_id, collection_sort,
+               is_top, create_time, update_time
         <if test="keyword != null and keyword != ''">
             , (
                 CASE WHEN title LIKE CONCAT('%', #{keyword}, '%') THEN 3 ELSE 0 END +

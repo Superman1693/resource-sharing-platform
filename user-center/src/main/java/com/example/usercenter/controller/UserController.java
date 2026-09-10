@@ -15,6 +15,7 @@ import com.example.usercenter.model.domain.request.UserChangePasswordRequest;
 import com.example.usercenter.model.domain.request.UserLoginRequest;
 import com.example.usercenter.model.domain.request.UserRegisterRequest;
 import com.example.usercenter.model.domain.request.UserResetPasswordRequest;
+import com.example.usercenter.service.PointsService;
 import com.example.usercenter.service.UserService;
 import com.example.usercenter.utils.JwtUtils;
 import jakarta.annotation.Resource;
@@ -53,6 +54,9 @@ public class UserController extends BaseController {
 
     @Resource
     private StarMemberMapper starMemberMapper;
+
+    @Resource
+    private PointsService pointsService;
 
     @PostMapping("/register") // 请求方式为post地址为register
     public BaseResponse<Long> userRegister(@RequestBody UserRegisterRequest userRegisterRequest) {// 将前端请求的body数据和userRegisterRequest
@@ -325,8 +329,10 @@ public class UserController extends BaseController {
 
         // 贡献值 = 发布*10 + 获赞*2 + 评论*1
         long contribution = publishCount * 10 + totalLikes * 2 + totalComments;
-        // 等级：每100贡献值升一级，最低1级
-        int level = (int) Math.max(1, contribution / 100 + 1);
+        // 等级：优先用积分账户 balance，不存在则按贡献值兜底
+        com.example.usercenter.model.domain.PointsAccount account = pointsService.getAccount(userId);
+        int baseScore = (account != null && account.getBalance() != null) ? account.getBalance() : (int) contribution;
+        int level = (int) Math.max(1, baseScore / 100 + 1);
 
         // 最近发布的笔记（时间线）
         QueryWrapper<Note> recentWrapper = new QueryWrapper<>();

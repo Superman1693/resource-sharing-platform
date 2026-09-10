@@ -17,6 +17,8 @@ import com.example.usercenter.model.domain.Note;
 import com.example.usercenter.model.domain.User;
 import com.example.usercenter.model.enums.CommentStatus;
 import com.example.usercenter.service.CommentService;
+import com.example.usercenter.service.PointsService;
+import com.example.usercenter.service.ReportService;
 import com.example.usercenter.service.NotificationService;
 import com.example.usercenter.service.NoteService;
 import jakarta.annotation.Resource;
@@ -65,6 +67,12 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
     @Resource
     private NotificationService notificationService;
+
+    @Resource
+    private PointsService pointsService;
+
+    @Resource
+    private ReportService reportService;
 
     @Resource
     private CommentMapper commentMapper;
@@ -201,6 +209,8 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
             );
         }
 
+        // 发表评论 +1 积分
+        pointsService.addPoints(loginUser.getId(), 1, "comment", "comment", comment.getId(), "发表评论");
         return fillCommentInfo(comment);
     }
 
@@ -263,6 +273,8 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
             );
         }
 
+        // 回复评论 +1 积分
+        pointsService.addPoints(loginUser.getId(), 1, "comment", "comment", comment.getId(), "回复评论");
         return fillCommentInfo(comment);
     }
 
@@ -409,6 +421,9 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
                     StringUtils.isNotBlank(reason) ? reason : "有人举报了一条评论"
             );
         }
+
+        // 落库举报记录
+        reportService.create(loginUser.getId(), "comment", id, reason);
 
         return true;
     }

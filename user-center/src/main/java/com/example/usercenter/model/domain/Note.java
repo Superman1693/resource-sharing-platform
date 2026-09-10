@@ -84,7 +84,7 @@ public class Note {
     private Integer likeCount;
 
     /**
-     * 状态：published/draft/deleted
+     * 状态：published-已发布 / draft-草稿 / scheduled-定时中 / pending-待审核 / rejected-已拒绝 / deleted-已删除
      */
     private String status;
 
@@ -121,6 +121,16 @@ public class Note {
      * 所属星球ID
      */
     private Long starId;
+
+    /**
+     * 所属专栏ID（星球内合集归属，可空）
+     */
+    private Long collectionId;
+
+    /**
+     * 专栏内章节序号
+     */
+    private Integer collectionSort;
 
     /**
      * 收藏ID（用于判断是否已收藏）

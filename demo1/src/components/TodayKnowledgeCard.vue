@@ -32,16 +32,16 @@ const extractSummary = (content, maxLength = 180) => {
 }
 
 const setDefaultCard = () => {
+  // 中性兜底：不再硬编码某篇笔记内容（避免删笔记后首页仍残留同名死数据的错觉）
   todayCard.value = {
-    id: 1,
-    title: 'Vue 3 Composition API 的核心优势',
-    content:
-      'Composition API 允许我们更好地组织和复用代码逻辑，通过 setup 函数可以将相关的逻辑组合在一起，而不是按照选项（data、methods、computed）来组织，极大提升了代码的可维护性。',
-    author: '知识星球',
-    starName: 'Vue3 深入学习',
-    starId: 1,
-    source: 'article',
-    publishTime: '2025-10-01',
+    id: null,
+    title: '暂无今日推荐',
+    content: '平台暂时没有可推荐的笔记，去发布第一篇吧！',
+    author: '',
+    starName: 'CodeVerse',
+    starId: null,
+    source: 'note',
+    publishTime: '',
   }
 }
 
@@ -58,22 +58,17 @@ const fetchTodayKnowledge = async () => {
     }
 
     const randomNote = noteList[Math.floor(Math.random() * noteList.length)]
-    const detailRes = await getNoteDetail(randomNote.id)
-    const d = detailRes.data
-
-    if (d) {
-      todayCard.value = {
-        id: d.id,
-        title: d.title || '无标题',
-        content: extractSummary(d.content),
-        author: d.author || '匿名用户',
-        starName: d.starName || '学习资源',
-        starId: d.starId,
-        source: d.contentType || 'note',
-        publishTime: d.publishTime || d.createTime || '',
-      }
-    } else {
-      setDefaultCard()
+    // 直接用列表项字段填充（getNoteList 返回的 Note 已含 title/content/author 等），
+    // 不再额外查 getNoteDetail——既省一次请求，又避免 detail 失败回退到硬编码死数据
+    todayCard.value = {
+      id: randomNote.id,
+      title: randomNote.title || '无标题',
+      content: extractSummary(randomNote.content || randomNote.summary),
+      author: randomNote.author || '匿名用户',
+      starName: randomNote.starName || '学习资源',
+      starId: randomNote.starId,
+      source: randomNote.contentType || 'note',
+      publishTime: randomNote.publishTime || randomNote.createTime || '',
     }
   } catch (_) {
     setDefaultCard()

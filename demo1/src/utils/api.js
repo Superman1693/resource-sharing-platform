@@ -149,9 +149,11 @@ export const deleteResource = (id) =>
     headers: { 'Content-Type': 'application/json' }
   })
 
-// 35.1) 举报笔记
-export const reportNote = (id) =>
-  request.post(`/note/report/${Number(id)}`)
+// 35.1) 举报笔记（可附带 reason，落库到 report 表）
+export const reportNote = (id, reason) =>
+  request.post(`/note/report/${Number(id)}`, reason ? { reason } : null, {
+    headers: { 'Content-Type': 'application/json' }
+  })
 
 // 25) 上传资源文件
 export const uploadResourceFile = (formData) => {
@@ -557,3 +559,102 @@ export const suggestTags = (q) =>
 // 标签回填（管理员：从 note.tags JSON 迁移到 tag+note_tag 关联表）
 export const migrateTags = () =>
   request.post('/tag/migrate')
+
+// ========== 积分签到 API ==========
+// 签到
+export const signIn = () =>
+  request.post('/points/sign')
+
+// 查询今日是否已签到
+export const checkSignedToday = () =>
+  request.get('/points/sign/today')
+
+// 积分账户（balance/totalEarned）
+export const getPointsAccount = () =>
+  request.get('/points/account')
+
+// 积分流水（分页）
+export const getPointsLog = (params) =>
+  request.get('/points/log', { params })
+
+// 签到日历（某月，参数 month 格式 yyyy-MM）
+export const getSignCalendar = (params) =>
+  request.get('/points/sign/calendar', { params })
+
+// 积分回填（管理员：按贡献值初始化现有用户 balance，幂等）
+export const migratePoints = () =>
+  request.post('/points/migrate')
+
+// ========== 举报管理 API（管理员） ==========
+// 举报列表（status 可选：pending/resolved/ignored）
+export const getReportList = (params) =>
+  request.get('/report/list', { params })
+
+// 处理举报（status: resolved/ignored + remark）
+export const handleReport = (id, body) =>
+  request.post(`/report/handle/${Number(id)}`, body)
+
+// ========== 敏感词管理 API（管理员） ==========
+// 查看当前敏感词库（{ total, words }）
+export const getSensitiveWords = () =>
+  request.get('/admin/sensitive/words')
+
+// 全量更新敏感词库（热生效，words 为字符串数组）
+export const updateSensitiveWords = (words) =>
+  request.put('/admin/sensitive/words', { words })
+
+// 重载敏感词库（热生效，从词库文件重新加载）
+export const reloadSensitiveWords = () =>
+  request.post('/admin/sensitive/reload')
+
+// ========== 平台总览 API（管理员） ==========
+// 平台数据总览（总用户/总笔记/总评论/总资源/今日新增笔记/待审核举报数）
+export const getStatsOverview = () =>
+  request.get('/stats/overview')
+
+// ========== 专栏/合集 API ==========
+// 创建专栏
+export const createColumn = (body) =>
+  request.post('/column/add', body)
+
+// 更新专栏
+export const updateColumn = (id, body) =>
+  request.put(`/column/update/${Number(id)}`, body)
+
+// 删除专栏
+export const deleteColumn = (id) =>
+  request.delete(`/column/delete/${Number(id)}`)
+
+// 专栏列表（按星球/作者筛选，免登录浏览）
+export const getColumnList = (params) =>
+  request.get('/column/list', { params })
+
+// 专栏详情（含章节笔记列表，按章节序号升序）
+export const getColumnDetail = (id) =>
+  request.get(`/column/${Number(id)}`)
+
+// 把笔记加入专栏
+export const addNoteToColumn = (body) =>
+  request.post('/column/note/add', body)
+
+// 把笔记移出专栏
+export const removeNoteFromColumn = (noteId) =>
+  request.post('/column/note/remove', { noteId: Number(noteId) })
+
+// 我的专栏
+export const getMyColumns = () =>
+  request.get('/column/my')
+
+// ========== 个性化推荐 API ==========
+// 推荐笔记（登录走标签偏好，未登录走热门兜底）
+export const getRecommendList = (size = 6) =>
+  request.get('/recommend/list', { params: { size } })
+
+// ========== 我的笔记（草稿箱）API ==========
+// 我的笔记（按 status 筛选：draft/scheduled/published/pending/rejected，需登录）
+export const getMyNotes = (params) =>
+  request.get('/note/my', { params })
+
+// 我的笔记详情（作者编辑回填用，返回任意状态含草稿/定时，需登录）
+export const getMyNoteDetail = (id) =>
+  request.get(`/note/my/${Number(id)}`)

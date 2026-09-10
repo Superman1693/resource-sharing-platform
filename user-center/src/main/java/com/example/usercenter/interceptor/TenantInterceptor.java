@@ -45,8 +45,13 @@ public class TenantInterceptor implements TenantLineHandler {
             "like_record",        // 点赞记录（按 user_id 隔离）
             "view_record",        // 浏览记录（按 note_id 隔离）
             "note_collection",    // 笔记收藏（按 user_id 隔离，全局）
+            "note_column",        // 笔记专栏（按 star_id 显式查询，不自动注入租户条件）
             "tag",                // 标签（全局共享）
             "note_tag",           // 笔记-标签关联（全局共享）
+            "points_account",     // 积分账户（按 user_id，全局）
+            "points_log",         // 积分流水（按 user_id，全局）
+            "sign_in_record",     // 签到记录（按 user_id，全局）
+            "report",             // 举报记录（全局）
             "follow",             // 关注关系（全局）
             "captcha",            // 验证码（全局）
             "error_log"           // 错误日志（全局）
