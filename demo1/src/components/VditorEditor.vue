@@ -425,6 +425,9 @@ const triggerImportMarkdown = () => {
         return
       }
       vditorInstance.setValue(text)
+      // setValue 不触发 Vditor 的 input 回调，手动同步父组件 v-model + 字数，避免导入后 content 为空
+      emit('update:modelValue', text)
+      emit('wordCount', text.replace(/\s/g, '').length)
       antMessage.success('Markdown 内容已导入')
     } catch (e) {
       antMessage.error('导入失败，请重试')

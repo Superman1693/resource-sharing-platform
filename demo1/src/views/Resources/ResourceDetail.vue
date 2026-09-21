@@ -3,7 +3,8 @@ import { computed, onMounted, ref, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message as antMessage } from 'ant-design-vue'
 import { ArrowLeftOutlined, DownloadOutlined, FileOutlined, FireOutlined, VideoCameraOutlined, CodeOutlined, FilePdfOutlined } from '@ant-design/icons-vue'
-import { getResourceDetail, getResourceList } from '../../utils/api'
+import { renderMarkdown } from '../../utils/markdown'
+import { getResourceDetail, getResourceList, getResourceContent } from '../../utils/api'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
 import python from 'highlight.js/lib/languages/python'
@@ -33,6 +34,10 @@ const relatedLoading = ref(false)
 const resource = ref(null)
 const relatedResources = ref([])
 const codePreview = ref('')
+const mdPreview = ref('')
+const txtPreview = ref('')
+// 文本类资源预览失败原因（文件不存在 / 网络异常等），用于提示而非静默"加载中"
+const contentError = ref('')
 const codeRef = ref(null)
 
 const resourceId = computed(() => Number(route.params.id))
@@ -57,15 +62,22 @@ const loadResource = async () => {
   try {
     const res = await getResourceDetail(resourceId.value)
     resource.value = res.data || null
-    if (resource.value?.resourceType === 'code' && resource.value?.downloadUrl) {
+    // 代码 / Markdown / 纯文本：走后端 /resource/content/{id} 拉取文本（绕过 OSS 前端 CORS 限制）
+    contentError.value = ''
+    if ((resource.value?.resourceType === 'code' || isMarkdown.value || isText.value) && resource.value?.id) {
       try {
-        const resp = await fetch(resource.value.downloadUrl)
-        codePreview.value = resp.ok ? await resp.text() : ''
-      } catch (_) {
-        codePreview.value = ''
+        const res = await getResourceContent(resource.value.id)
+        const raw = (res && res.code === 0 && typeof res.data === 'string') ? res.data : ''
+        if (resource.value.resourceType === 'code') codePreview.value = raw
+        if (isMarkdown.value) mdPreview.value = raw ? await renderMarkdown(raw, 'full') : ''
+        if (isText.value) txtPreview.value = raw
+        if (!raw) contentError.value = '文件内容为空'
+      } catch (e) {
+        codePreview.value = ''; mdPreview.value = ''; txtPreview.value = ''
+        contentError.value = '文件不存在或已被删除，无法在线预览，可尝试重新上传'
       }
     } else {
-      codePreview.value = ''
+      codePreview.value = ''; mdPreview.value = ''; txtPreview.value = ''
     }
   } catch (err) {
     antMessage.error(err?.description || '加载资源详情失败')
@@ -79,12 +91,26 @@ const loadRelated = async () => {
   if (!resource.value) return
   relatedLoading.value = true
   try {
-    const res = await getResourceList({
-      tag: resource.value.tag || undefined,
-      category: resource.value.category || undefined,
-    })
-    const items = Array.isArray(res.data) ? res.data : []
-    relatedResources.value = items.filter((item) => item.id !== resource.value.id).slice(0, 6)
+    // 优先按标签查（最相关），无标签按分类查
+    const params = {}
+    if (resource.value.tag) params.tag = resource.value.tag
+    else if (resource.value.category) params.category = resource.value.category
+    const res = await getResourceList(params)
+    // 只推荐已公开资源，排除当前资源
+    let items = (Array.isArray(res.data) ? res.data : [])
+      .filter((item) => item.id !== resource.value.id && item.status === 'enabled')
+    // 不足 6 个：补充热门资源（按下载量降序），保证推荐区始终填满
+    if (items.length < 6) {
+      const hotRes = await getResourceList({ pageSize: 20 })
+      const existIds = new Set(items.map((i) => i.id))
+      const fill = (Array.isArray(hotRes.data) ? hotRes.data : [])
+        .filter((item) => item.id !== resource.value.id
+          && item.status === 'enabled'
+          && !existIds.has(item.id))
+        .sort((a, b) => (b.downloadCount || 0) - (a.downloadCount || 0))
+      items = items.concat(fill)
+    }
+    relatedResources.value = items.slice(0, 6)
   } catch (err) {
     relatedResources.value = []
   } finally {
@@ -116,6 +142,8 @@ const fileExt = computed(() => getFileExt(resource.value?.downloadUrl || resourc
 const isPdf = computed(() => fileExt.value === 'pdf')
 const isImage = computed(() => ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(fileExt.value))
 const isVideo = computed(() => ['mp4', 'webm', 'ogg', 'mov'].includes(fileExt.value) || resource.value?.resourceType === 'video')
+const isMarkdown = computed(() => ['md', 'markdown'].includes(fileExt.value))
+const isText = computed(() => ['txt', 'text'].includes(fileExt.value))
 
 const langMap = { js: 'javascript', ts: 'typescript', py: 'python', java: 'java', css: 'css', html: 'xml', xml: 'xml', sql: 'sql', sh: 'bash', json: 'json', jsx: 'javascript', tsx: 'typescript', vue: 'xml' }
 const codeLang = computed(() => langMap[fileExt.value] || 'plaintext')
@@ -131,10 +159,14 @@ watch(codePreview, async (val) => {
 
 const previewSource = computed(() => resource.value?.downloadUrl || '')
 
+// 在新标签内嵌预览：走后端 inline 流式代理（OSS 直连/attachment 会触发直接下载）
 const openPreviewNewTab = () => {
   if (!resource.value?.id) return
-  window.open(`/api/resource/download/${resource.value.id}`, '_blank')
+  window.open(`/api/resource/preview/${resource.value.id}`, '_blank')
 }
+
+// PDF iframe 预览源（同样走后端 inline 代理；video/img 嵌入式标签不受 disposition 影响，继续用 OSS 直连）
+const pdfPreviewSource = computed(() => resource.value?.id ? `/api/resource/preview/${resource.value.id}` : '')
 
 onMounted(async () => {
   await loadResource()
@@ -144,10 +176,6 @@ onMounted(async () => {
 
 <template>
   <div class="resource-detail-page">
-    <a-button type="link" class="back-button" @click="router.push('/user/resources')">
-      <ArrowLeftOutlined /> 返回列表
-    </a-button>
-
     <a-spin :spinning="loading">
       <a-card v-if="resource" class="resource-header" :bordered="false">
         <div class="header-grid">
@@ -189,9 +217,6 @@ onMounted(async () => {
             <a-card title="在线预览" :bordered="false" class="preview-card">
               <div style="display:flex; justify-content:flex-end; gap: 8px; margin-bottom:8px">
                 <a-button type="link" v-if="previewSource" @click="openPreviewNewTab">在新标签中打开预览</a-button>
-                <a-button type="link" v-if="previewSource" @click="handleDownload">
-                  <DownloadOutlined /> 下载
-                </a-button>
               </div>
 
               <template v-if="isVideo">
@@ -201,8 +226,8 @@ onMounted(async () => {
 
               <template v-else-if="isPdf">
                 <iframe
-                  v-if="previewSource"
-                  :src="previewSource"
+                  v-if="pdfPreviewSource"
+                  :src="pdfPreviewSource"
                   class="preview-frame"
                   title="资源预览"
                 />
@@ -217,8 +242,26 @@ onMounted(async () => {
               <template v-else-if="resource?.resourceType === 'code'">
                 <div class="code-preview" ref="codeRef">
                   <pre v-if="codePreview"><code :class="codeLang">{{ codePreview }}</code></pre>
-                  <a-empty v-else description="当前代码资源未提供可直接读取的原文，建议下载查看" />
+                  <a-empty v-else :description="contentError || '当前代码资源未提供可直接读取的原文，建议下载查看'" />
                 </div>
+              </template>
+
+              <template v-else-if="isMarkdown">
+                <div
+                  v-if="mdPreview"
+                  class="md-preview yuque-markdown-body"
+                  style="padding:16px;max-height:560px;overflow:auto;line-height:1.7"
+                  v-html="mdPreview"
+                ></div>
+                <a-empty v-else :description="contentError || 'Markdown 内容加载中或为空，可下载查看'" />
+              </template>
+
+              <template v-else-if="isText">
+                <pre
+                  v-if="txtPreview"
+                  style="padding:16px;max-height:560px;overflow:auto;background:#f6f8fa;border-radius:8px;font-size:13px;white-space:pre-wrap;word-break:break-word"
+                >{{ txtPreview }}</pre>
+                <a-empty v-else :description="contentError || '文本内容加载中或为空，可下载查看'" />
               </template>
 
               <template v-else>
@@ -260,10 +303,6 @@ onMounted(async () => {
 .resource-detail-page {
   padding: 16px;
   font-family: var(--font-body);
-}
-.back-button {
-  padding-left: 0;
-  margin-bottom: 12px;
 }
 .resource-header {
   border-radius: var(--radius-lg);

@@ -126,7 +126,18 @@ const router = createRouter({
 
     // 兜底：未定义路由跳转到用户首页
     { path: '/:pathMatch(.*)*', redirect: '/user/home' }
-  ]
+  ],
+  // 路由滚动行为：新导航回到页面顶部（否则详情页继承列表页滚动位置，看起来"落在评论区"）；
+  // 带 hash 锚点时滚到锚点；浏览器后退/前进恢复上次的滚动位置
+  scrollBehavior(to, from, savedPosition) {
+    if (savedPosition) {
+      return savedPosition
+    }
+    if (to.hash) {
+      return { el: to.hash, behavior: 'smooth' }
+    }
+    return { top: 0, left: 0 }
+  }
 })
 
 // ===== 路由守卫：免登浏览，按需登录 =====

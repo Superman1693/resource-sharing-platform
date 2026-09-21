@@ -171,6 +171,10 @@ export const uploadResourceFile = (formData) => {
 export const downloadResource = (id) =>
   request.get(`/resource/download/${id}`, { responseType: 'blob' })
 
+// 获取资源文本内容（md/txt/code 在线预览用，后端代理绕过 OSS CORS）
+export const getResourceContent = (id) =>
+  request.get(`/resource/content/${Number(id)}`)
+
 // 27) 切换资源状态
 export const toggleResourceStatus = (id, status) =>
   request.post('/resource/toggleStatus', {

@@ -243,6 +243,119 @@ public class ResourceController extends BaseController {
     }
 
     /**
+     * 获取资源文本内容（用于 md/txt/code 在线预览，后端拉取 OSS 绕过前端 CORS 限制）
+     * 仅 enabled 资源可预览（管理员可预览任意状态）
+     */
+    @GetMapping("/content/{id}")
+    public BaseResponse<String> getResourceContent(@PathVariable Long id) {
+        if (id == null || id <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "资源ID不能为空");
+        }
+        Resource resource = resourceService.getById(id);
+        if (resource == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "资源不存在");
+        }
+        LoginUserDTO loginUser = null;
+        try {
+            loginUser = getLoginUser();
+        } catch (Exception ignored) {
+        }
+        if (!"enabled".equals(resource.getStatus())
+                && (loginUser == null || !Integer.valueOf(1).equals(loginUser.getUserRole()))) {
+            throw new BusinessException(ErrorCode.NO_AUTH, "资源尚未公开，无法预览");
+        }
+        String url = resource.getDownloadUrl();
+        if (StringUtils.isBlank(url)) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "该资源无内容可预览");
+        }
+        try {
+            // 后端拉取 OSS 内容（无 CORS 限制），以 UTF-8 文本返回
+            java.net.URL u = new java.net.URL(url);
+            try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(u.openStream(), java.nio.charset.StandardCharsets.UTF_8))) {
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line).append('\n');
+                }
+                return ResultUtils.success(sb.toString());
+            }
+        } catch (Exception e) {
+            log.error("拉取资源内容失败 id={}: {}", id, e.getMessage());
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "资源内容获取失败");
+        }
+    }
+
+    /**
+     * 在线预览资源（新标签/iframe 内嵌显示）：流式转发 OSS 内容并设 inline，
+     * 解决 OSS 对象 Content-Disposition: attachment 导致浏览器直接下载而非预览的问题
+     * （download 接口是 302 重定向到 OSS，后端设的头不生效；本接口流式转发，头真正可控）
+     */
+    @GetMapping("/preview/{id}")
+    public void previewResource(@PathVariable Long id, HttpServletRequest request, HttpServletResponse response)
+            throws IOException {
+        if (id == null || id <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "资源ID不能为空");
+        }
+        Resource resource = resourceService.getById(id);
+        if (resource == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "资源不存在");
+        }
+        LoginUserDTO loginUser = null;
+        try {
+            loginUser = getLoginUser();
+        } catch (Exception ignored) {
+        }
+        if (!"enabled".equals(resource.getStatus())
+                && (loginUser == null || !Integer.valueOf(1).equals(loginUser.getUserRole()))) {
+            throw new BusinessException(ErrorCode.NO_AUTH, "资源尚未公开，无法预览");
+        }
+        String ossUrl = resource.getDownloadUrl();
+        if (StringUtils.isBlank(ossUrl)) {
+            response.setContentType("text/html;charset=UTF-8");
+            response.getWriter().write("<h3 style='color:red;'>该资源未配置文件，无法预览！</h3>");
+            response.getWriter().flush();
+            return;
+        }
+        String fileName = resource.getName() != null ? resource.getName() : "resource-" + id;
+        String encodedFileName = URLEncoder.encode(fileName, "UTF-8").replaceAll("\\+", "%20");
+        // inline：浏览器内嵌显示（PDF 查看器/文本渲染），而非触发下载
+        response.setHeader("Content-Disposition", "inline; filename=\"" + encodedFileName + "\"");
+        response.setHeader("Content-Disposition", "inline; filename*=UTF-8''" + encodedFileName);
+        // 按文件名后缀推断 Content-Type（PDF 走浏览器查看器必须 application/pdf）；文件名无后缀时用 OSS URL 后缀兜底
+        String typeSource = fileName.contains(".") ? fileName : ossUrl;
+        response.setContentType(guessContentType(typeSource));
+        // 流式转发 OSS 内容（不整文件缓存到内存；预览不计下载次数）
+        try (java.io.InputStream in = new java.net.URL(ossUrl).openStream();
+             java.io.OutputStream out = response.getOutputStream()) {
+            byte[] buf = new byte[8192];
+            int len;
+            while ((len = in.read(buf)) != -1) {
+                out.write(buf, 0, len);
+            }
+        } catch (Exception e) {
+            log.error("资源预览转发失败 id={}: {}", id, e.getMessage());
+        }
+    }
+
+    /** 按文件名后缀推断 Content-Type（浏览器内嵌预览用） */
+    private String guessContentType(String name) {
+        String n = name == null ? "" : name.toLowerCase();
+        if (n.endsWith(".pdf")) return "application/pdf";
+        if (n.endsWith(".png")) return "image/png";
+        if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+        if (n.endsWith(".gif")) return "image/gif";
+        if (n.endsWith(".webp")) return "image/webp";
+        if (n.endsWith(".svg")) return "image/svg+xml";
+        if (n.endsWith(".mp4")) return "video/mp4";
+        if (n.endsWith(".webm")) return "video/webm";
+        if (n.endsWith(".md")) return "text/markdown; charset=utf-8";
+        if (n.endsWith(".txt")) return "text/plain; charset=utf-8";
+        if (n.endsWith(".html")) return "text/html; charset=utf-8";
+        return "application/octet-stream";
+    }
+
+    /**
      * 从Map中获取Long值
      */
     private Long getLongValue(Map<String, Object> map, String key) {

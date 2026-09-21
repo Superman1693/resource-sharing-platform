@@ -176,8 +176,10 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "标题和内容不能为空");
         }
 
-        // 敏感词校验（标题/摘要/正文）
-        sensitiveWordChecker.check("笔记标题或内容", note.getTitle(), note.getSummary(), note.getContent());
+        // 敏感词逐字段校验（命中时错误含字段名，方便前端定位高亮）
+        checkSensitive("笔记标题", note.getTitle());
+        checkSensitive("笔记摘要", note.getSummary());
+        checkSensitive("笔记正文", note.getContent());
 
         if (note.getTitle().length() > 100) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "标题不能超过100字符");
@@ -748,5 +750,16 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
         update.setId(id);
         update.setStatus("pending");
         return this.updateById(update);
+    }
+
+    /**
+     * 敏感词逐字段校验：命中时抛出含字段名 + 命中词的异常，方便前端定位高亮
+     */
+    private void checkSensitive(String field, String text) {
+        String hit = sensitiveWordChecker.findFirst(text);
+        if (hit != null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR,
+                    field + "包含敏感词「" + hit + "」，请修改后再发布");
+        }
     }
 }

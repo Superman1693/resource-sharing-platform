@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, watch, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { message as antMessage } from 'ant-design-vue'
 import { FileTextOutlined, QuestionCircleOutlined, BookOutlined, PlusOutlined } from '@ant-design/icons-vue'
@@ -129,6 +129,16 @@ const loadContentDetail = async () => {
   }
 }
 
+// 敏感词错误定位：命中字段红框 + help 文案，编辑该字段时自动清除
+const sensitiveError = reactive({ title: '', summary: '', content: '' })
+const clearSensitive = (field) => {
+  if (field) sensitiveError[field] = ''
+  else { sensitiveError.title = ''; sensitiveError.summary = ''; sensitiveError.content = '' }
+}
+watch(() => formState.title, () => { if (sensitiveError.title) sensitiveError.title = '' })
+watch(() => formState.summary, () => { if (sensitiveError.summary) sensitiveError.summary = '' })
+watch(() => formState.content, () => { if (sensitiveError.content) sensitiveError.content = '' })
+
 const handleSubmit = async () => {
   if (!formRef.value) return
   try {
@@ -154,6 +164,7 @@ const handleSubmit = async () => {
     }
     
     if (res.code === 0) {
+      clearSensitive()
       antMessage.success(isEdit.value ? '更新成功！' : '发布成功！')
       router.push('/main/contentManage')
     } else {
@@ -165,7 +176,13 @@ const handleSubmit = async () => {
       return
     }
     if (err?.isBusinessError) {
-      antMessage.error(err.description || err.message || '操作失败，请重试')
+      const desc = err.description || err.message || '操作失败，请重试'
+      antMessage.error(desc)
+      // 敏感词定位：根据错误文案命中的字段，红框高亮对应输入项
+      clearSensitive()
+      if (desc.includes('标题')) sensitiveError.title = desc
+      else if (desc.includes('摘要')) sensitiveError.summary = desc
+      else if (desc.includes('正文')) sensitiveError.content = desc
     } else {
       antMessage.error('操作失败，请重试')
     }
@@ -205,7 +222,7 @@ onMounted(() => {
           </a-radio-group>
         </a-form-item>
 
-        <a-form-item label="标题" name="title">
+        <a-form-item label="标题" name="title" :validate-status="sensitiveError.title ? 'error' : undefined" :help="sensitiveError.title || undefined">
           <a-input
             v-model:value="formState.title"
             placeholder="请输入标题"
@@ -259,7 +276,7 @@ onMounted(() => {
           </div>
         </a-form-item>
 
-        <a-form-item label="摘要" name="summary">
+        <a-form-item label="摘要" name="summary" :validate-status="sensitiveError.summary ? 'error' : undefined" :help="sensitiveError.summary || undefined">
           <a-textarea
             v-model:value="formState.summary"
             :rows="3"
@@ -269,7 +286,7 @@ onMounted(() => {
           />
         </a-form-item>
 
-        <a-form-item label="内容" name="content">
+        <a-form-item label="内容" name="content" :validate-status="sensitiveError.content ? 'error' : undefined" :help="sensitiveError.content || undefined">
           <VditorEditor
             v-model="formState.content"
             placeholder="支持 Markdown 格式，请输入内容..."

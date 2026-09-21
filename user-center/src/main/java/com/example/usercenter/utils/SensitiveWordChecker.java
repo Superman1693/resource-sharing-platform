@@ -37,8 +37,12 @@ import java.util.Set;
 @Slf4j
 public class SensitiveWordChecker {
 
-    /** 干扰符：匹配过程中跳过这些字符，防止用符号拆词绕过 */
-    private static final String IGNORE_CHARS = " \t\r\n*#@!！?？。，,.;:：~～·—_-+|/\\[]{}()（）\"'`";
+    /**
+     * 干扰符：匹配过程中跳过这些字符，防止用符号拆词绕过（如 "赌 博" 仍可命中）。
+     * 注意：不含半角冒号 ":" 和斜杠 "/"——它们是 URL 协议/路径分隔符（如 https://），
+     * 若作为干扰符会把 "https://b" 中的 s 与 b 跨 "://" 拼接误报为敏感词「s://b」。
+     */
+    private static final String IGNORE_CHARS = " \t\r\n*#@!！?？。，,.;：~～·—_-+|\\[]{}()（）\"'`";
 
     /** 单个敏感词最大长度 */
     private static final int MAX_WORD_LENGTH = 50;
