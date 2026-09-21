@@ -26,7 +26,9 @@ onMounted(async () => {
     }
 
     // 验证 state 参数防止 CSRF
-    if (state && !validateOAuthState(state, provider)) {
+    // QQ 分支的 state 是后端固定值 "qq_login"（用于识别来源），并非随机值，跳过校验；
+    // GitHub 分支的 state 由 utils/oauth.js 随机生成并存入 sessionStorage，必须校验。
+    if (state && state !== 'qq_login' && !validateOAuthState(state, provider)) {
       error.value = '安全验证失败，请重试'
       loading.value = false
       return

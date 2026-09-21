@@ -37,6 +37,29 @@ public interface UserService extends IService<User> {
     User userLogin(String userAccount, String userPassword, HttpServletRequest request);
 
     /**
+     * 解析用户的「当前星球」ID，用于签发 JWT 的 starId claim。
+     *
+     * <p>取值顺序：</p>
+     * <ol>
+     *   <li>{@code user.current_star_id}（用户在多个星球间主动选定的那一个）；</li>
+     *   <li>为空时回退到 {@code star_member} 中<b>最早加入</b>的星球，并回写到 {@code current_star_id}；</li>
+     *   <li>仍为空说明用户未加入任何星球，返回 {@code null}。</li>
+     * </ol>
+     *
+     * @param userId 用户ID
+     * @return 当前星球ID，可能为 null
+     */
+    Long resolveCurrentStarId(Long userId);
+
+    /**
+     * 切换用户的当前星球，并重新签发携带新 starId 的 JWT。
+     *
+     * @param starId 目标星球ID，必须已加入
+     * @return 新的 JWT token
+     */
+    String switchCurrentStar(Long starId);
+
+    /**
      * 用户脱敏
      * @param originUser
      * @return

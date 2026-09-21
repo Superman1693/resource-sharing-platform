@@ -3,6 +3,7 @@ import axios from 'axios'
 import { message } from 'ant-design-vue'
 import router from '../router/router'
 import { API_ERROR_CODES, normalizeBaseResponse } from './apiContract'
+import { getStarScope } from './starScope'
 
 const getToken = () => {
   // 优先从 pinia-plugin-persistedstate 持久化的 userLogin store 中读取
@@ -80,12 +81,20 @@ request.interceptors.response.use(
   }
 )
 
-// 请求拦截器（添加 token）
+// 请求拦截器（添加 token 与星球作用域）
 request.interceptors.request.use(
   (config) => {
     const token = getToken()
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
+    }
+    // 多租户：处于星球页面时带上 X-Star-Id，后端据此把本次查询收窄到该星球
+    // （未处于星球页面时不带此头，保持首页/搜索/热榜可跨星球浏览）
+    const starScope = getStarScope()
+    if (starScope) {
+      config.headers['X-Star-Id'] = String(starScope)
+    } else if (config.headers['X-Star-Id']) {
+      delete config.headers['X-Star-Id']
     }
     return config
   },

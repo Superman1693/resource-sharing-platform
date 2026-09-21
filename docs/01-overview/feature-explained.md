@@ -118,7 +118,7 @@ async login(userAccount, userPassword, rememberMe = false) {
 
 ```java
 @PostMapping("/login")
-@RateLimit(maxRequests = 10, timeWindowSeconds = 60)  // 每分钟最多10次，防暴力破解
+@RateLimit(key = "login", windowSeconds = 60, maxRequests = 10)  // 60 秒窗口内最多 10 次，防暴力破解
 public BaseResponse<LoginUserVO> userLogin(@RequestBody UserLoginRequest request) {
     // 1. 参数校验
     if (request == null) throw new BusinessException(ErrorCode.PARAMS_ERROR);
@@ -181,14 +181,13 @@ public LoginUserVO userLogin(String userAccount, String userPassword, boolean re
         throw new BusinessException(ErrorCode.FORBIDDEN, "账号已被封禁");
     }
 
-    // 5. 生成 JWT Token
-    long expireTime = rememberMe ? 7 * 24 * 3600 : 24 * 3600;  // 记住我=7天，否则=1天
-    String token = JwtUtils.generateToken(
-        user.getId(),
-        user.getUserRole(),
-        user.getStarId(),   // 多租户：用户所属星球ID
-        expireTime
-    );
+    // 5. 生成 JWT Token（实际逻辑位于 UserController.userLogin）
+    //    记住我 = 30 天；否则取配置值 spring.jwt.expiration（application-dev.yml 默认 86400 秒 = 1 天）
+    long expireTime = rememberMe ? 30L * 24 * 3600 : jwtUtils.getExpiration();
+    // 多租户：把用户的「当前星球」ID 一起写进 claim（未加入任何星球时为 null）
+    // resolveCurrentStarId：优先 user.current_star_id；为空则回退「最早加入的星球」并回写
+    Long starId = userService.resolveCurrentStarId(user.getId());
+    String token = jwtUtils.generateToken(user.getId(), user.getUserRole(), starId, expireTime);
 
     // 6. 构造返回对象（脱敏后的用户信息）
     LoginUserVO loginUserVO = new LoginUserVO();
@@ -205,20 +204,22 @@ public LoginUserVO userLogin(String userAccount, String userPassword, boolean re
 #### 第六步：JWT Token 是什么？
 
 ```java
-// JwtUtils.generateToken 内部做了什么：
-public static String generateToken(Long userId, Integer userRole, Long starId, long expireSeconds) {
+// JwtUtils.generateToken 内部做了什么（4 个参数，包含 starId）
+public String generateToken(Long userId, Integer userRole, Long starId, long expirationSeconds) {
     // JWT = Header.Payload.Signature
-    // Header: { "alg": "HS256", "typ": "JWT" }
-    // Payload: { "userId": 123, "userRole": 1, "starId": 456, "exp": 1718000000 }
-    // Signature: HMAC-SHA256(header + payload, secretKey)
+    // Payload 包含：{ "userId": 123, "userRole": 1, "starId": 456, "iat": ..., "exp": ... }
+    // starId 为 null（用户未加入任何星球）时不写该 claim
+    JwtBuilder builder = Jwts.builder()
+        .claim("userId", userId)          // 把用户ID塞进Token
+        .claim("userRole", userRole)      // 把角色塞进Token
+        .issuedAt(new Date())             // 签发时间
+        .expiration(expireDate)           // 过期时间
+        .signWith(getSigningKey());       // 用密钥签名
 
-    return Jwts.builder()
-        .claim("userId", userId)      // 把用户ID塞进Token
-        .claim("userRole", userRole)  // 把角色塞进Token
-        .claim("starId", starId)      // 把星球ID塞进Token
-        .setExpiration(new Date(System.currentTimeMillis() + expireSeconds * 1000))
-        .signWith(SignatureAlgorithm.HS256, SECRET_KEY)  // 用密钥签名
-        .compact();
+    if (starId != null) {
+        builder.claim("starId", starId);  // 多租户标识：用户的「默认星球」
+    }
+    return builder.compact();
 }
 ```
 
@@ -239,7 +240,7 @@ axios POST /api/user/login  ← request.js 拦截器自动加 Authorization head
         ↓
 UserServiceImpl.userLogin()
   → 查数据库验证账号密码
-  → 生成 JWT Token（包含 userId, userRole, starId）
+  → 生成 JWT Token（claim 仅含 userId、userRole）
   → 返回脱敏用户信息 + Token
         ↓
 前端收到响应 → response 拦截器检查 code === 0
@@ -580,7 +581,7 @@ public NoteVO getNoteById(Long id) {
 #### 定时任务把浏览量刷到数据库
 
 ```java
-@Scheduled(fixedRate = 300000)  // 每 5 分钟执行一次
+@Scheduled(fixedDelay = 60000)  // 距上次执行结束 60 秒后再跑一次
 public void flushViewCount() {
     // 1. 找到所有 note:view:* 的 key
     Set<String> keys = redisTemplate.keys("note:view:*");
@@ -604,7 +605,7 @@ public void flushViewCount() {
 **为什么用 Redis 而不是直接更新数据库？**
 - 假设 1000 人同时看一篇笔记
 - 直接 UPDATE：1000 次数据库写操作，数据库扛不住
-- Redis 方案：1000 次内存 INCR（极快） + 1 次批量 UPDATE（每 5 分钟）
+- Redis 方案：1000 次内存 INCR（极快） + 1 次批量 UPDATE（每 60 秒）
 
 ---
 
@@ -701,52 +702,63 @@ export const checkLikeStatus = (noteId) =>
 #### 后端点赞逻辑（防重复设计）
 
 ```java
-@PostMapping("/note/{noteId}")
+@PostMapping("/like/{id}")
 @LoginRequired
-public BaseResponse<Boolean> likeNote(@PathVariable Long noteId) {
-    Long userId = UserContext.getUserId();  // 从 ThreadLocal 获取当前用户ID
-    boolean result = likeService.likeNote(userId, noteId);
-    return ResultUtils.success(result);
+@PreventDuplicate(waitTime = 0, leaseTime = 3, message = "点赞过于频繁，请稍后再试")
+public BaseResponse<Map<String, Object>> likeNote(@PathVariable Long id, HttpServletRequest request) {
+    boolean result = noteService.likeNote(id, request);
+    if (result) {
+        Note note = noteService.getById(id);
+        // 返回最新的点赞数等数据
+    }
+    ...
 }
 ```
 
 ```java
-public boolean likeNote(Long userId, Long noteId) {
-    // 1. Redis 检查是否已点赞（快速判断）
-    String likeKey = "note:liked:" + noteId;
-    Boolean isMember = redisTemplate.opsForSet().isMember(likeKey, userId);
-    if (Boolean.TRUE.equals(isMember)) {
-        return false;  // 已经点过赞了，直接返回
+@Caching(evict = {
+    @CacheEvict(value = "noteDetail", key = "#id"),
+    @CacheEvict(value = "noteList", allEntries = true)
+})
+public boolean likeNote(Long id, HttpServletRequest request) {
+    User loginUser = getLoginUser(request);
+
+    Note note = this.getById(id);
+    if (note == null) {
+        throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记不存在");
     }
 
-    // 2. 数据库唯一索引兜底（防止并发问题）
-    //    like_record 表有 (user_id, target_id, target_type) 的唯一索引
+    // 1. 直接插入点赞记录，靠唯一索引 uk_user_target 保证幂等
+    //    （不先 SELECT 再 INSERT，避免 TOCTOU 竞态窗口）
+    LikeRecord likeRecord = new LikeRecord();
+    likeRecord.setUserId(loginUser.getId());
+    likeRecord.setTargetType("note");
+    likeRecord.setTargetId(id);
     try {
-        LikeRecord record = new LikeRecord();
-        record.setUserId(userId);
-        record.setTargetId(noteId);
-        record.setTargetType("note");
-        likeRecordMapper.insert(record);
-        // SQL: INSERT INTO like_record (user_id, target_id, target_type) VALUES (?, ?, 'note')
-        // 如果已存在 → 唯一索引冲突 → 抛异常 → 被 catch 捕获
+        likeRecordMapper.insert(likeRecord);
     } catch (DuplicateKeyException e) {
-        return false;  // 并发插入，另一个请求已经插入了
+        throw new BusinessException(ErrorCode.PARAMS_ERROR, "已点赞，请勿重复操作");
     }
 
-    // 3. Redis Set 记录点赞状态
-    redisTemplate.opsForSet().add(likeKey, userId);
+    // 2. INSERT 成功后再原子递增计数，保证一致性
+    noteMapper.incrementLikeCount(id);
 
-    // 4. 更新笔记点赞数
-    noteMapper.incrementLikeCount(noteId);
-    // SQL: UPDATE note SET like_count = like_count + 1 WHERE id = ?
+    // 3. 异步更新热度分（发布事件，避免 @Async 自调用失效）
+    eventPublisher.publishEvent(new NoteHotScoreEvent(this, id));
+
+    // 4. 给笔记作者 +2 积分
+    pointsService.addPoints(note.getAuthorId(), 2, "like", "note", id, "笔记被点赞");
 
     return true;
 }
 ```
 
-**防重复的双重保障：**
-1. **Redis Set** — `SISMEMBER` 快速判断，大部分重复请求在这里被拦截
-2. **数据库唯一索引** — 即使 Redis 判断失败（如 Redis 重启），数据库也能兜底
+**防重复的保障（本项目实际做法）：**
+1. **数据库唯一索引** — `like_record` 表的 `uk_user_target(user_id, target_type, target_id)` 唯一约束是**唯一**的防重手段：直接 INSERT，撞约束即视为已点赞
+2. **接口级分布式锁** — `@PreventDuplicate(leaseTime = 3)` 在 Controller 层拦截高频重复请求
+3. **缓存驱逐** — 点赞后同步失效 `noteDetail` 与 `noteList` 缓存
+
+> 注：本项目**没有**使用「Redis Set 判重」方案。
 
 ---
 
@@ -929,73 +941,120 @@ const resourceTypeColor = {
 知识星球A（starId=1）的数据：笔记1, 笔记2, 笔记3
 知识星球B（starId=2）的数据：笔记4, 笔记5
 
-用户张三属于星球A → 他只能看到笔记1,2,3
-用户李四属于星球B → 他只能看到笔记4,5
+用户进入星球A页面 → 该页面内的查询只返回笔记1,2,3（由租户作用域强制收窄）
+用户离开星球页面   → 恢复全平台可读（首页 / 搜索 / 热榜需要跨星球）
 ```
+
+> 关键差异：本项目**不是**「用户只能看自己星球」，而是「**在星球作用域内**只看本星球」，
+> 因为平台本身是公开社区——未加入的用户也应能浏览星球详情。
 
 ### 后端怎么实现数据隔离？
 
-#### MyBatis-Plus 多租户插件（MybatisPlusConfig）
+#### 第一步：前端声明「星球作用域」
+
+```js
+// demo1/src/router/router.js —— 路由守卫按页面写入/清除作用域
+const ROUTE_STAR_PARAM = {
+  UserStarDetail: 'id',        // /user/starDetail/:id
+  UserKnowledgeMap: 'starId'   // /user/knowledgeMap/:starId?
+}
+
+router.beforeEach((to, from, next) => {
+  syncStarScopeFromRoute(to)   // 进入星球页 → setStarScope(id)；其他页 → clearStarScope()
+  // ...原有的登录 / 权限判断
+})
+
+// demo1/src/utils/request.js —— 请求拦截器附加请求头
+const starScope = getStarScope()
+if (starScope) {
+  config.headers['X-Star-Id'] = String(starScope)
+}
+```
+
+#### 第二步：后端校验成员身份并写入上下文
 
 ```java
-@Bean
-public MybatisPlusInterceptor mybatisPlusInterceptor() {
-    MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
+// interceptor/AuthInterceptor.java
+public static final String STAR_SCOPE_HEADER = "X-Star-Id";
 
-    // 注册多租户插件
-    interceptor.addInnerInterceptor(new TenantLineInnerInterceptor(new TenantLineHandler() {
-        @Override
-        public Expression getTenantId() {
-            // 从当前线程的 UserContext 获取 starId
-            Long starId = UserContext.getStarId();
-            return new LongValue(starId);
-        }
+private void applyStarScope(HttpServletRequest request) {
+    String raw = request.getHeader(STAR_SCOPE_HEADER);
+    if (StringUtils.isBlank(raw)) return;               // 没带 → 不收窄
+    LoginUserDTO loginUser = UserContext.get();
+    if (loginUser == null) return;                      // 未登录 → 不接受作用域
+    Long scopeStarId = Long.valueOf(raw.trim());
+    // 关键：必须确实是该星球成员，否则忽略（只忽略不报错，避免残留上下文导致 500）
+    QueryWrapper<StarMember> w = new QueryWrapper<>();
+    w.eq("star_id", scopeStarId).eq("user_id", loginUser.getUserId());
+    if (starMemberMapper.selectCount(w) > 0) {
+        UserContext.setStarScope(scopeStarId);
+    }
+}
+```
 
-        @Override
-        public String getTenantIdColumn() {
-            return "star_id";  // 所有表的租户列名
-        }
+#### 第三步：租户插件按「作用域 + 白名单」注入条件
 
-        @Override
-        public boolean ignoreTable(String tableName) {
-            // 这些表是全局共享的，不需要加 star_id 条件
-            return IGNORE_TABLES.contains(tableName);
-        }
-    }));
+```java
+// interceptor/TenantInterceptor.java（注册在 MybatisPlusConfig 的 TenantLineInnerInterceptor 上）
+private static final List<String> TENANT_SCOPED_TABLES = Arrays.asList(
+    "note",           // 笔记（星球内容的核心载体）
+    "comment",        // 评论（star_id 由所属笔记派生）
+    "note_column",    // 专栏（星球内合集）
+    "knowledge_map"   // 知识图谱（星球内图谱）
+);
 
-    return interceptor;
+@Override
+public boolean ignoreTable(String tableName) {
+    if (UserContext.get() == null) return true;      // 未登录 → 放行公开数据
+    if (!UserContext.hasStarScope()) return true;    // 无星球上下文 → 不收窄
+    return !TENANT_SCOPED_TABLES.contains(tableName);// 有作用域 → 只对白名单生效
+}
+
+@Override
+public Expression getTenantId() {
+    Long scope = UserContext.getStarScope();
+    if (scope != null) return new LongValue(scope);
+    LoginUserDTO u = UserContext.get();
+    return new LongValue(u != null && u.getStarId() != null ? u.getStarId() : 0);
+}
+
+@Override
+public String getTenantIdColumn() {
+    return "star_id";
 }
 ```
 
 #### 实际效果
 
 ```java
-// 你在代码里写：
-noteMapper.selectById(123);
+// 处于星球 7 的页面，且我是星球 7 的成员时，你在代码里写：
+noteMapper.selectList(new QueryWrapper<Note>().eq("status", "published"));
 
 // MyBatis-Plus 自动变成：
-// SELECT * FROM note WHERE id = 123 AND star_id = 当前用户的starId
-//                                    ↑ 自动加的！你不用手动写
+// SELECT * FROM note WHERE status = 'published' AND star_id = 7
+//                                                      ↑ 自动注入
+
+// 而在首页 / 搜索页（没有 X-Star-Id），SQL 不会追加任何租户条件
 ```
 
-#### 哪些表需要隔离，哪些不需要？
+#### 为什么白名单只有这 4 张表？
 
-```java
-// TenantInterceptor.IGNORE_TABLES
-public static final List<String> IGNORE_TABLES = Arrays.asList(
-    "user",           // 用户是全局的（一个人可以加入多个星球）
-    "like_record",    // 点赞记录是全局的
-    "follow",         // 关注关系是全局的
-    "notification",   // 通知是全局的
-    "message"         // 私信是全局的
-);
-```
+| 类别 | 表 | 为什么 |
+|------|----|--------|
+| **参与过滤** | `note`、`comment`、`note_column`、`knowledge_map` | 有 `star_id` 列，且「归属某星球」语义明确 |
+| 无 `star_id` 列 | `resource`、`learning_path`、`message`、`notification`、`user`、`user_follow`… | 注入即报 `Unknown column 'star_id'` |
+| 按自身维度隔离 | `like_record`（`user_id`）、`view_record`（`note_id`）、`note_collection`（`user_id`） | 隔离维度不是星球 |
+| 全局共享 | `tag`、`note_tag`、`star`、`points_account`… | 跨星球通用 |
+
+> ⚠️ **维护须知**：新增星球相关页面必须在 `router.js` 的 `ROUTE_STAR_PARAM` 登记；
+> 否则该页面不带 `X-Star-Id`，隔离对它失效（**静默降级，不报错**）。
 
 **关键理解：**
-- **需要隔离的表**（note, comment, resource, star_member 等）：自动加 `star_id` 条件
-- **不需要隔离的表**（user, like_record, follow 等）：全局共享
 
----
+1. **作用域由请求头声明，而不是拿「用户的默认星球」当隐含条件。** `user` 表没有 `star_id`，用户与星球是多对多（`star_member`），不存在「用户唯一的星球」。若用「最早加入的星球」，用户在浏览 A 星球时插件会注入 B 星球的过滤条件 → 两条件互斥 → 一条内容都查不到。
+2. **`starId`（JWT claim）与 `starScope`（请求级）是两个概念**：前者由 `UserService.resolveCurrentStarId()` 在登录时解析（优先 `user.current_star_id`，为空回退最早加入的星球），用于 `starFeed` 这类「我加入了哪些星球」的场景；后者只影响当前这一次请求是否收窄。
+3. **隔离是三层叠加的**：① 显式 `eq("star_id", …)` 查询 → ② 成员/价格校验（付费星球脱敏）→ ③ 租户作用域注入。第三层是**纵深防御**：即便将来某处漏写显式条件，作用域内也不会越权读到其他星球的数据。
+
 
 ## 12. 实时通知（WebSocket）
 
@@ -1007,14 +1066,17 @@ public static final List<String> IGNORE_TABLES = Arrays.asList(
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     @Override
     public void configureMessageBroker(MessageBrokerRegistry config) {
-        config.enableSimpleBroker("/queue");  // 消息代理前缀
-        config.setUserDestinationPrefix("/user");  // 用户目的地前缀
+        config.enableSimpleBroker("/topic");                          // 客户端订阅前缀
+        config.setApplicationDestinationPrefixes("/app");             // 客户端发送前缀
+        config.setUserDestinationPrefix("/user");                     // 用户目的地前缀（点对点）
     }
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
         registry.addEndpoint("/ws")
-                .setAllowedOriginPatterns("*")
+                // 白名单方式，不是 "*"
+                .setAllowedOriginPatterns(
+                        "http://localhost:5173", "http://localhost:5174", "https://www.e-ren.icu")
                 .withSockJS();  // 兼容不支持 WebSocket 的浏览器
     }
 }
@@ -1049,8 +1111,8 @@ const connectWebSocket = () => {
   stompClient.connect(
     { Authorization: `Bearer ${userStore.token}` },
     () => {
-      // 4. 订阅自己的通知队列
-      stompClient.subscribe(`/user/${userStore.id}/queue/notification`, (message) => {
+      // 4. 订阅自己的通知队列（Spring 按 principal 解析成本人队列）
+      stompClient.subscribe('/user/queue/notification', (message) => {
         const notification = JSON.parse(message.body)
 
         // 5. 更新未读数
@@ -1074,7 +1136,7 @@ const connectWebSocket = () => {
 ### Spring AI 集成
 
 ```java
-// CommonConfiguration.java
+// config/CommonConfiguration.java
 @Bean
 public ChatClient chatClient(ChatClient.Builder builder) {
     return builder
@@ -1083,43 +1145,42 @@ public ChatClient chatClient(ChatClient.Builder builder) {
 }
 ```
 
-### Controller
+### Controller（`controller/ChatController.java`）
 
 ```java
-@PostMapping("/chat")
-@LoginRequired
-public BaseResponse<String> chat(@RequestBody AiChatRequest request) {
-    String response = aiService.chat(request.getMessage(), request.getSessionId());
-    return ResultUtils.success(response);
+@PostMapping("/message")
+public BaseResponse<ChatMessage> sendMessage(
+        @Valid @RequestBody ChatRequest chatRequest,
+        HttpServletRequest request) {
+    Long userId = getCurrentUserId();
+    return ResultUtils.success(chatService.sendMessage(chatRequest, userId));
+}
+
+@PostMapping(value = "/message/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+@RateLimit(key = "chat_stream", windowSeconds = 60, maxRequests = 20)
+public Flux<ServerSentEvent<String>> sendMessageStream(
+        @Valid @RequestBody ChatRequest chatRequest,
+        HttpServletRequest request) {
+    Long userId = getCurrentUserId();
+    return chatService.sendMessageStream(chatRequest, userId);
 }
 ```
 
-### Service
+请求体 `ChatRequest` 字段：`sessionId`、`content`、`sessionName`、`streaming`（默认 `true`）。
+
+### Service（`service/impl/ChatServiceImpl.java`）
 
 ```java
-public String chat(String message, String sessionId) {
-    // 1. 从 Redis 获取历史对话
-    String historyKey = "ai:chat:" + sessionId;
-    List<String> history = redisTemplate.opsForList().range(historyKey, 0, -1);
-
-    // 2. 构建带历史的 prompt
-    String fullPrompt = String.join("\n", history) + "\n用户: " + message;
-
-    // 3. 调用 AI 模型
-    String response = chatClient.prompt()
-        .user(fullPrompt)
-        .call()
-        .content();
-
-    // 4. 保存对话到 Redis（保留最近 20 条）
-    redisTemplate.opsForList().rightPush(historyKey, "用户: " + message);
-    redisTemplate.opsForList().rightPush(historyKey, "AI: " + response);
-    redisTemplate.opsForList().trim(historyKey, -20, -1);
-    redisTemplate.expire(historyKey, 24, TimeUnit.HOURS);  // 24小时过期
-
-    return response;
+public ChatMessage sendMessage(ChatRequest request, Long userId) {
+    // 1. 会话不存在则创建（会话信息持久化在 message_conversation 表）
+    // 2. 从 Redis 读取该会话的历史上下文
+    // 3. 调用 Spring AI ChatClient 生成回复
+    // 4. 落库 ChatMessage，并回写会话的最后一条消息
+    ...
 }
 ```
+
+> 历史上下文的 Redis key、保留条数与过期时间以 `ChatServiceImpl` 实现为准。
 
 ---
 

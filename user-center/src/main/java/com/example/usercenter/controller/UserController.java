@@ -106,14 +106,40 @@ public class UserController extends BaseController {
             return ResultUtils.error(ErrorCode.LOGIN_FAILED, "用户名或密码错误");
         }
 
-        // 5. 生成 JWT token（记住我：30天；普通：7天）
+        // 5. 生成 JWT token（记住我：30天；普通：取配置 spring.jwt.expiration）
         boolean rememberMe = userLoginRequest.isRememberMe();
         long expirationSeconds = rememberMe ? 30L * 24 * 3600 : jwtUtils.getExpiration();
-        String token = jwtUtils.generateToken(user.getId(), user.getUserRole(), expirationSeconds);
+        // 多租户：把用户的「当前星球」ID 一起写进 token claim（未加入任何星球时为 null）
+        Long starId = userService.resolveCurrentStarId(user.getId());
+        String token = jwtUtils.generateToken(user.getId(), user.getUserRole(), starId, expirationSeconds);
         user.setToken(token);
 
         // 6. 登录成功，返回成功的 BaseResponse 对象
         return ResultUtils.success(user);
+    }
+
+    /**
+     * 切换当前星球（多租户上下文）
+     *
+     * <p>用户可能同时加入多个星球，切换后重新签发携带新 starId 的 Token，
+     * 前端拿到后覆盖本地 token 即可。</p>
+     */
+    @PostMapping("/switchStar")
+    @LoginRequired
+    public BaseResponse<Map<String, String>> switchStar(@RequestBody Map<String, Object> body) {
+        if (body == null || body.get("starId") == null) {
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR, "星球ID不能为空");
+        }
+        Long starId;
+        try {
+            starId = Long.valueOf(String.valueOf(body.get("starId")));
+        } catch (NumberFormatException e) {
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR, "星球ID格式不正确");
+        }
+        String token = userService.switchCurrentStar(starId);
+        Map<String, String> result = new HashMap<>();
+        result.put("token", token);
+        return ResultUtils.success(result);
     }
 
     /**

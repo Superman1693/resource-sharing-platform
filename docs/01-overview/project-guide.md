@@ -44,19 +44,19 @@
 **关键代码位置：**
 - 前端：`demo1/src/store/userLogin.js` — Token 存储与用户状态管理
 - 前端：`demo1/src/utils/request.js` — axios 拦截器自动注入 Token
-- 后端：`UserCenter/src/main/java/.../interceptor/AuthInterceptor.java` — Token 解析
+- 后端：`user-center/src/main/java/com/example/usercenter/interceptor/AuthInterceptor.java` — Token 解析
 
 **难点：**
 1. **Token 过期处理** — 前端拦截器捕获 401 跳转登录页
 2. **JWT 黑名单** — 用户登出后 Token 仍有效，需加入 Redis 黑名单使其失效
-3. **多租户隔离** — JWT claims 中包含 `starId`，用于行级数据隔离
+3. **多租户隔离** — JWT claims 中携带 `starId`（登录时写入用户的「默认星球」）；前端进入星球页面时附加 `X-Star-Id` 请求头，`AuthInterceptor` 校验成员身份后写入 `UserContext.starScope`，`TenantInterceptor` 据此对白名单表注入 `star_id` 条件（见 §6.1）
 
 ### 2.2 注解式权限控制
 
 ```java
-@LoginRequired    // 必须登录才能访问
-@AdminRequired    // 必须是管理员
-@RateLimit(100)   // 每分钟最多 100 次请求
+@LoginRequired                                                    // 必须登录才能访问
+@AdminRequired                                                    // 必须是管理员
+@RateLimit(key = "xxx", windowSeconds = 60, maxRequests = 100)    // 60 秒窗口内最多 100 次
 ```
 
 AuthInterceptor 通过**反射**读取方法上的注解决定是否放行。这是 AOP 的实际应用。
@@ -81,19 +81,19 @@ AuthInterceptor 通过**反射**读取方法上的注解决定是否放行。这
 ```
 用户浏览笔记 → Redis INCR note:view:笔记ID (内存操作，极快)
                                     ↓
-定时任务(每5分钟) → 批量读取所有 view:* → 一次性 UPDATE 到数据库
+定时任务(fixedDelay=60000，每 60 秒) → 批量读取所有 note:view:* → 一次性 UPDATE 到数据库
                                     ↓
                               清空 Redis 计数器
 ```
 
 **关键代码：**
-- `NoteController.incrementViewCount()` — 每次浏览 +1 Redis
-- `task/ViewCountFlushTask.java` — 定时刷盘任务
-- 布隆过滤器：`BloomFilterConfig.java` — 启动时加载所有已发布笔记 ID，防止缓存穿透
+- `NoteController` 的 `POST /note/view/{id}` — 每次浏览 +1 到 Redis（key 前缀 `note:view:`）
+- `task/FlushViewCountTask.java` — `@Scheduled(fixedDelay = 60000)` 定时刷盘，批量调用 `incrementViewCountByDelta`
+- 布隆过滤器：`config/BloomFilterConfig.java` — 启动时加载已发布笔记 ID，防止缓存穿透
 
 ### 3.3 笔记热度排行榜（难点 ⭐⭐⭐）
 
-**算法：** `hotScore = viewCount × 1 + likeCount × 3 + commentCount × 5`
+**算法：** `hotScore = viewCount + likeCount × 3 + commentCount × 2`（见 `event/NoteEventListener.java`，与 `requirements.md` 需求 12 一致）
 
 **实现：** Redis Sorted Set（ZSET）
 - `ZADD note:hot 150 note:123` — 更新笔记热度分
@@ -161,26 +161,75 @@ CREATE TABLE comment (
 
 ### 6.1 多租户架构（难点 ⭐⭐⭐⭐）
 
-这是整个项目**最复杂的部分**。
+这是整个项目**设计上最复杂、实现上最需要小心**的部分。
 
-**核心概念：** 每个知识星球是一个"租户"，数据天然隔离。
+**核心概念：** 每个知识星球是一个「租户」，数据按 `star_id` 做行级隔离。
 
-```java
-// MyBatis-Plus 多租户插件自动拦截所有 SQL
-// SELECT * FROM note WHERE id = 1
-// 自动变成：
-// SELECT * FROM note WHERE id = 1 AND star_id = 当前用户的starId
+#### 6.1.1 为什么不是「全局无条件注入」
+
+教科书式的多租户做法是对所有表无条件追加 `tenant_id = ?`。但本平台是**公开的知识社区**——用户即使没加入某星球，也要能浏览其详情、参与搜索与热榜。无条件注入会踩两个坑：
+
+| 坑 | 说明 |
+|----|------|
+| **① 表根本没有该列** | `resource`、`learning_path`、`message` 等表没有 `star_id`，注入即报 `Unknown column 'star_id' in 'where clause'` |
+| **② 等值条件互斥** | `note` 等表已有 `eq("star_id", 正在浏览的星球)`，若再叠加 `star_id = 我的默认星球`，两条件必须同时成立 → 「查看别的星球」一条都查不到 |
+
+因此本项目采用**「请求级作用域 + 表白名单」**方案。
+
+#### 6.1.2 实现机制
+
+```
+前端：router.js 的路由守卫
+      ├ 进入 UserStarDetail(:id) / UserKnowledgeMap(:starId)
+      │    → starScope.setStarScope(id)   （写入 localStorage）
+      └ 其他路由 → starScope.clearStarScope()
+
+        request.js 请求拦截器
+          → 若作用域存在，附加请求头  X-Star-Id: {starId}
+   ↓
+后端：AuthInterceptor.preHandle
+      ├ 解析 JWT → UserContext.set(LoginUserDTO{userId, userRole, starId})
+      └ applyStarScope(request)
+           ├ 读取 X-Star-Id
+           ├ 校验当前用户确为该星球成员（查 star_member）
+           └ 通过 → UserContext.setStarScope(starId)
+   ↓
+      TenantInterceptor（MyBatis-Plus TenantLineHandler）
+        ├ ignoreTable(table)
+        │    ├ 未登录                    → true（放行）
+        │    ├ 无星球作用域              → true（放行，保持公开可读）
+        │    └ 有作用域 → 仅白名单返回 false
+        │         （白名单：note / comment / note_column / knowledge_map）
+        └ getTenantId() → UserContext.getStarScope()
+                          （兜底：LoginUserDTO.starId）
 ```
 
-**实现方式：**
-- `TenantInterceptor` — 拦截请求，从 JWT 中提取 `starId`
-- `MybatisPlusConfig` — 注册 `TenantLineInnerInterceptor`
-- **忽略表** — `user`、`like_record` 等全局表不加租户条件
+- `getTenantIdColumn()` 返回租户列名 `star_id`
+- **作用域由请求头声明，而不是用「用户的默认星球」**：`user` 表没有 `star_id`，用户与星球是多对多（`star_member`），不存在「用户唯一的星球」；若用「最早加入的星球」作隐含作用域，用户在浏览 A 星球时插件会注入 B 星球的过滤条件，结果查空
 
-**难点：**
-1. 某些表（如 `user`）是全局共享的，不能加 `star_id` 条件
-2. 跨租户查询（如管理后台查看所有星球）需要临时禁用租户过滤
-3. 新用户加入星球后，JWT 中的 `starId` 需要更新
+#### 6.1.3 两个 starId 的区别
+
+| 概念 | 来源 | 用途 |
+|------|------|------|
+| `starId`（JWT claim） | 登录时由 `UserService.resolveCurrentStarId()` 解析：优先 `user.current_star_id`，为空则回退「`star_member` 中 `join_time` 最早的一条」（`StarMemberMapper.selectPrimaryStarId`） | 「我加入了哪些星球」类场景（如 `starFeed`） |
+| `starScope`（`UserContext`，请求级） | 请求头 `X-Star-Id`，经成员身份校验后写入 | 决定本次请求是否注入租户条件、注入哪个值 |
+
+#### 6.1.4 三层隔离机制
+
+| 层 | 机制 | 作用 |
+|----|------|------|
+| ① 显式查询 | `StarController#starDetail`（`eq("star_id", id)`）、`#starFeed`（`in("star_id", starIds)`） | 星球页只展示本星球内容 |
+| ② 权限校验 | `canReadStarContent`（付费星球对非成员脱敏） | 付费内容不外泄 |
+| ③ 租户作用域注入 | 本节所述的 `X-Star-Id` → `TenantInterceptor` | **纵深防御**：即使某处漏写显式 `eq("star_id")`，作用域内也读不到其他星球的数据 |
+
+> ⚠️ **维护须知**：新增星球相关页面时，必须在 `demo1/src/router/router.js` 的 `ROUTE_STAR_PARAM` 中登记，否则该页面不会携带 `X-Star-Id`，隔离对该页面失效（**不报错，属静默降级**）。
+>
+> 若要实现「无论前端是否传头部都强制隔离」，仍需三步改造：① 给 `resource`/`learning_path`/`message` 等表补 `star_id` 列并回填；② 给跨星球读取的 Mapper 方法加 `@InterceptorIgnore(tenantLine = "true")`；③ 把「当前星球」做成用户可切换的持久化状态。
+
+**其他难点：**
+1. 跨租户查询（如管理后台查看所有星球）不会带 `X-Star-Id`，因此天然不受影响
+2. 用户新加入星球后，**已签发的 JWT 里 `starId` 仍是登录时的旧值**；但浏览星球页时以请求头的 `starScope` 为准，因此不影响星球内的隔离效果（`starFeed` 等依赖默认星球的场景需重新登录才更新）
+
 
 ### 6.2 星球成员管理
 
@@ -202,8 +251,8 @@ CREATE TABLE comment (
 ```
 
 **关键代码：**
-- `EsSearchService.java` — ES 查询构建
-- `NoteSearchMapper.xml` — MyBatis XML 映射（ES 数据同步）
+- `service/impl/EsSearchServiceImpl.java` — ES 索引创建与查询构建（IK 分词：`ik_max_word` 建索引、`ik_smart` 查询）
+- `resources/mapper/NoteMapper.xml` — 本项目**唯一**的 MyBatis XML 映射；ES 数据同步由 `EsSearchService` 负责（不存在 `NoteSearchMapper.xml`）
 
 ### 7.2 搜索防抖（前端）
 
@@ -338,21 +387,44 @@ Jackson 自定义序列化器 `MaskSensitiveSerializer` 在 JSON 输出时自动
 ## 📐 十二、前端路由架构
 
 ```
-/user/*          → 用户端（浏览免登录，操作需登录）
-  /user/home     → 首页
-  /user/notes    → 笔记列表
-  /user/resources→ 资源列表
-  /user/stars    → 知识星球列表
-  /user/profile  → 个人中心
-  /user/ai       → AI 聊天
+/login  /register  /resetPassword  /changeUserPassword  /oauth/callback  → 免登录页
 
-/main/*          → 管理端（需管理员权限）
-  /main/notes    → 笔记管理
-  /main/resources→ 资源管理
-  /main/users    → 用户管理
-  /main/stars    → 星球管理
-  /main/comments → 评论管理
+/user/*                → 用户端（浏览免登录，操作需登录）
+  home                 → 首页
+  notes                → 笔记列表
+  noteDetail/:id       → 笔记详情
+  publish              → 发布笔记
+  resources            → 资源列表
+  resourceDetail/:id   → 资源详情
+  starList             → 知识星球列表
+  starDetail/:id       → 星球详情
+  tags  /  tag/:name   → 标签广场 / 按标签检索
+  search               → 全局搜索
+  hotRank              → 热榜
+  myContent            → 我的内容（含我的收藏）
+  messages             → 私信
+  followList           → 关注 / 粉丝
+  knowledgeMap/:starId?      → 知识地图（查看）
+  knowledgeMapEdit/:starId?  → 知识地图（编辑）
+  learningPath         → 学习路径
+  growthTimeline       → 成长轨迹
+  userActivity         → 数据看板
+  column/:id  /  columnManage → 专栏详情 / 专栏管理
+  profile              → 个人中心
+  user/:userId         → 他人主页
+
+/main/*                → 管理端（需管理员权限）
+  contentManage  /  contentPublish → 内容管理 / 内容发布
+  commentManage        → 评论管理
+  resourceManage /  resourceAdd    → 资源管理 / 资源新增
+  starManage           → 星球管理
+  adminUser            → 用户管理
+  sensitiveWord        → 敏感词管理
+  reportManage         → 举报管理
+  dashboard            → 数据看板
 ```
+
+> 注：AI 聊天**不是独立路由**，而是全局浮窗组件（`components/AIFloatBall.vue` + `AIFloatWindow.vue`，挂载于 `UserLayout`）。
 
 **守卫逻辑：**
 ```javascript
@@ -386,7 +458,7 @@ router.beforeEach((to, from, next) => {
 ## 🚀 十四、启动顺序建议
 
 ```
-1. MySQL  — 建库建表 (database.sql)
+1. MySQL  — 建库建表 (`mysql -u root -p < db/schema.sql`)
 2. Redis  — 用于缓存 + JWT 黑名单
 3. 后端   — mvnw spring-boot:run (:8080)
 4. 前端   — npm run dev (:5173，自动代理 /api → :8080)
@@ -401,19 +473,39 @@ router.beforeEach((to, from, next) => {
 |------|------|------|
 | **认证** | `POST /api/user/login` | 登录，返回 JWT |
 | | `POST /api/user/register` | 注册 |
+| | `POST /api/user/userLogout` | 退出登录（Token 进黑名单） |
+| | `GET /api/user/current` | 当前登录用户 |
 | **笔记** | `GET /api/note/list` | 分页查询笔记 |
 | | `GET /api/note/{id}` | 笔记详情 |
-| | `POST /api/note` | 创建笔记 |
+| | `POST /api/note/add` | 创建笔记 |
+| | `PUT /api/note/update/{id}` | 更新笔记 |
+| | `POST /api/note/delete` | 删除笔记 |
+| | `POST /api/note/like/{id}` | 点赞笔记 |
+| | `POST /api/note/view/{id}` | 浏览量 +1（写 Redis） |
+| | `GET /api/note/hot` | 热榜 |
 | **资源** | `GET /api/resource/list` | 分页查询资源 |
-| | `POST /api/resource/upload` | 上传资源 |
-| **互动** | `POST /api/like` | 点赞/取消 |
-| | `POST /api/comment` | 发表评论 |
-| | `POST /api/follow` | 关注/取关 |
-| **搜索** | `GET /api/search?keyword=xxx` | 全文搜索 |
+| | `POST /api/resource/add` | 新增资源 |
+| | `POST /api/resource/upload` | 上传资源文件（OSS） |
+| | `POST /api/resource/download/{id}` | 下载计数 |
+| **互动** | `POST /api/comment/add` | 发表评论 |
+| | `POST /api/comment/reply/{commentId}` | 回复评论 |
+| | `POST /api/comment/like/{id}` | 点赞评论 |
+| | `POST /api/follow/add` / `POST /api/follow/delete` | 关注 / 取关 |
+| | `POST /api/collection/{noteId}` | 收藏笔记（toggle） |
+| **搜索** | `GET /api/search/notes` | 笔记全文搜索（ES） |
+| | `GET /api/search/users` / `GET /api/search/resources` | 用户 / 资源搜索 |
+| | `GET /api/search/hot` | 热搜词云 |
+| **星球** | `GET /api/star/list` | 星球列表 |
+| | `POST /api/star/join/{id}` / `POST /api/star/exit/{id}` | 加入 / 退出星球 |
 | **统计** | `GET /api/stats/personal` | 个人学习看板 |
 | | `GET /api/stats/contribution` | 贡献热力图 |
-| **通知** | WebSocket `/ws` | 实时通知推送 |
-| **AI** | `POST /api/ai/chat` | AI 聊天 |
+| | `GET /api/stats/overview` | 平台数据概览 |
+| **后台** | `GET /api/admin/content/pending` | 待审核内容 |
+| | `POST /api/admin/user/ban/{id}` | 封禁用户 |
+| **通知** | `GET /api/notification/list` + WebSocket `/ws` | 站内通知 + 实时推送 |
+| **AI** | `POST /api/chat/message` | AI 聊天（`/stream` 为流式） |
+
+> 完整接口清单以 `demo1/src/utils/api.js` 为准（约 130 个），上表仅列核心接口。
 
 ---
 

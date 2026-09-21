@@ -1,6 +1,7 @@
 package com.example.usercenter.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.usercenter.annotation.LoginRequired;
@@ -378,6 +379,15 @@ public class StarController extends BaseController {
         member.setJoinTime(new Date());
         starMemberMapper.insert(member);
 
+        // 多租户：用户首次加入星球时，自动把它设为「当前星球」
+        User joinedUser = userMapper.selectById(loginUser.getUserId());
+        if (joinedUser != null && joinedUser.getCurrentStarId() == null) {
+            User userPatch = new User();
+            userPatch.setId(joinedUser.getId());
+            userPatch.setCurrentStarId(id);
+            userMapper.updateById(userPatch);
+        }
+
         // 更新成员数
         Star update = new Star();
         update.setId(id);
@@ -408,6 +418,7 @@ public class StarController extends BaseController {
      * 退出星球
      */
     @PostMapping("/exit/{id}")
+    @LoginRequired
     @PreventDuplicate(waitTime = 0, leaseTime = 5, message = "操作过于频繁，请稍后再试")
     public BaseResponse<Boolean> exitStar(@PathVariable Long id) {
         LoginUserDTO loginUser = getLoginUser();
@@ -430,6 +441,17 @@ public class StarController extends BaseController {
         update.setId(id);
         update.setMemberCount(Math.max(0, count - 1));
         starMapper.updateById(update);
+
+        // 多租户：若退出的正是「当前星球」，则改选一个已加入的星球（没有则置空）
+        User exitingUser = userMapper.selectById(loginUser.getUserId());
+        if (exitingUser != null && Objects.equals(exitingUser.getCurrentStarId(), id)) {
+            Long nextStarId = starMemberMapper.selectPrimaryStarId(loginUser.getUserId());
+            // updateById 默认忽略 null 字段，置空必须用 UpdateWrapper
+            LambdaUpdateWrapper<User> userWrapper = new LambdaUpdateWrapper<>();
+            userWrapper.eq(User::getId, exitingUser.getId())
+                       .set(User::getCurrentStarId, nextStarId);
+            userMapper.update(null, userWrapper);
+        }
 
         return ResultUtils.success(true);
     }

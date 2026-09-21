@@ -38,17 +38,34 @@ public class JwtUtils {
         return expiration;
     }
 
-    //生成JWT Token
-    public String generateToken(Long userId, Integer userRole, long expirationSeconds) {
+    /**
+     * 生成 JWT Token
+     *
+     * @param userId            用户ID
+     * @param userRole          用户角色（0=普通用户，1=管理员）
+     * @param starId            当前所属星球ID（多租户标识，可为 null）
+     * @param expirationSeconds 有效期（秒）
+     */
+    public String generateToken(Long userId, Integer userRole, Long starId, long expirationSeconds) {
         Date now = new Date();
         Date expireDate = new Date(now.getTime() + expirationSeconds * 1000);
-        return Jwts.builder()
+
+        JwtBuilder builder = Jwts.builder()
                 .claim("userId", userId)        //存入用户id
                 .claim("userRole", userRole)    //存入角色类型
-                .issuedAt(now)                      //签发时间
-                .expiration(expireDate)             //过期时间
-                .signWith(getSigningKey())          //签名防篡改
-                .compact();
+                .issuedAt(now)                  //签发时间
+                .expiration(expireDate)         //过期时间
+                .signWith(getSigningKey());     //签名防篡改
+
+        // 多租户：把 starId 写入 claim，供 AuthInterceptor 回填 UserContext，
+        // 进而供 TenantInterceptor 做行级隔离。
+        // 用户未加入任何星球时 starId 为 null，此时不写该 claim
+        // （避免序列化出 "starId": null，也避免下游误判为「租户 0」）。
+        if (starId != null) {
+            builder.claim("starId", starId);
+        }
+
+        return builder.compact();
     }
 
     /**

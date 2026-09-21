@@ -2,6 +2,23 @@
 
 前后端分离的知识社区平台，支持笔记/资源创作、全文搜索、社区互动、知识图谱与 AI 助手。
 
+## 文档索引
+
+完整文档中心见 **[docs/README.md](docs/README.md)**。
+
+| 文档 | 内容 |
+|------|------|
+| [docs/01-overview/project-guide.md](docs/01-overview/project-guide.md) | 技术深度解析（架构 / 认证 / 多租户 / 缓存 / 设计模式） |
+| [docs/01-overview/feature-explained.md](docs/01-overview/feature-explained.md) | 功能逐行解析（用户操作 → 前端 → 后端 → 数据库） |
+| [docs/01-overview/requirements.md](docs/01-overview/requirements.md) | 需求规格与验收标准（P0–P2 共 19 项） |
+| [docs/02-architecture/](docs/02-architecture/) | 多级缓存、分布式锁使用指南 |
+| [docs/03-api/](docs/03-api/) | REST 接口文档（覆盖范围见文档开头）、AI 聊天接口 |
+| [docs/04-guides/vditor-editor-usage.md](docs/04-guides/vditor-editor-usage.md) | Vditor Markdown 编辑器组件指南 |
+| [docs/05-changelog/](docs/05-changelog/) | 版本更新日志 |
+| [`db/schema.sql`](db/schema.sql) | 数据库完整脚本（唯一权威版本） |
+
+> 接口的权威来源：前端 [`demo1/src/utils/api.js`](demo1/src/utils/api.js)、后端 [`user-center/.../controller/`](user-center/src/main/java/com/example/usercenter/controller/)。
+
 ## 技术栈
 
 - **前端** (`demo1/`)：Vue 3 + Vite + Ant Design Vue + Pinia + Vue Router
@@ -74,11 +91,34 @@ cd user-center
 ```
 
 ### 数据库
-建表 SQL：`demo1/database.sql`，迁移脚本：`user-center/src/main/resources/db/migration/`。
+数据库采用**双轨制**：
 
-> Flyway 未启用，迁移需手动执行：`mysql -h localhost -P 3306 -u<user> -p<pwd> user_center < V*.sql`
+| 角色 | 位置 | 说明 |
+|------|------|------|
+| **机械权威**（版本化迁移） | `user-center/src/main/resources/db/migration/` | Flyway 管理，应用启动时自动执行；`V1__baseline_schema.sql` 为基线，新增变更须追加 `V{n}__描述.sql`（历史脚本不可修改） |
+| **可读全量快照** | [`db/schema.sql`](db/schema.sql) | 26 张表 + 索引 + 初始化数据 + 增量升级附录，供查阅与手工建库 |
 
-迁移清单：`V2` 关注/私信/学习路径 → `V3` 星球公告 → `V4` 资源上传者 → **`V5` 收藏夹** → **`V6` 标签体系**。
+> 两者等价：快照 = 全部迁移的顺序累加。结构变更时**必须同时更新两处**。
+
+> ⚠️ **前置条件：MySQL 必须 8.0+**
+> Flyway 9.x 社区版对 MySQL 的最低要求是 8.0。若连到 MySQL 5.7，应用会在启动阶段抛
+> `FlywayEditionUpgradeRequiredException` 并直接退出（**降级 Flyway 无效**，9.16 / 9.21 / 9.22 判定相同）。
+> 本机开发库已指向 **`localhost:3307`**（MySQL 8.0）；`3306` 是本机的 MySQL 5.7，不能用于本项目。
+>
+> 另：`pom.xml` 的 `<resources><includes>` 是**扩展名白名单**，`**/*.sql` 必须在其中，
+> 否则迁移脚本不会被打进 classpath，Flyway 会报 `No migrations found`。
+
+```bash
+# 方式一（推荐）：交给 Flyway —— 启动后端即自动完成建表/升级
+cd user-center && ./mvnw spring-boot:run
+
+# 方式二：手工建库
+mysql -u root -p < db/schema.sql      # 全新库：一条命令建好全部表
+```
+
+> `db/schema.sql` 第 13 部分为「已有数据库的增量升级语句」；MySQL 的 `ALTER TABLE` 不支持 `IF NOT EXISTS`，重复执行报「字段已存在」属正常现象。
+> **注意（防止重复执行）**：如果已用 `db/schema.sql` 手工建过库，再启动应用前请把 `spring.flyway.baseline-version` 设为 `2`，否则 Flyway 会从 `V1` 判定并重复执行 `V2`。
+> 注意：MySQL 的 `ALTER TABLE` 不支持 `IF NOT EXISTS`（那是 MariaDB 语法），旧 `migrate.sql` 中的该写法在 MySQL 下会报语法错误，新脚本已移除。
 
 标签回填（建表后执行一次，把现有 `note.tags` JSON 迁到关联表，需管理员 token）：
 ```bash
@@ -89,6 +129,15 @@ curl -X POST http://localhost:8080/api/tag/migrate -H "Authorization: Bearer <�
 
 ```
 .
+├── README.md              # 项目总览（本文件）
+├── CLAUDE.md              # AI 编码助手约定
+├── docs/                  # 📚 统一文档中心（入口见 docs/README.md）
+│   ├── 01-overview/       # 项目说明：技术解析 / 功能链路 / 需求规格
+│   ├── 02-architecture/   # 架构与性能：多级缓存 / 分布式锁
+│   ├── 03-api/            # 接口文档：REST 接口 / AI 聊天接口
+│   ├── 04-guides/         # 组件指南：Vditor 编辑器
+│   ├── 05-changelog/      # 更新日志
+├── db/                    # 数据库脚本（schema.sql，唯一权威版本）
 ├── demo1/                 # 前端 Vue 3
 │   └── src/
 │       ├── views/         # 按模块组织：Notes/Resources/Content/Comments/Stars/Knowledge/User/Tags/Search...

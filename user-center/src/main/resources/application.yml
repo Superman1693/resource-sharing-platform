@@ -2,7 +2,7 @@ spring:
   application:
     name: user-center
   profiles:
-    active: dev
+    active: prod
   datasource:
     type: com.alibaba.druid.pool.DruidDataSource
     druid:
@@ -49,6 +49,22 @@ spring:
       # 100MB 与资源上传页面的限制一致；头像/封面图片由 UploadController 自行校验 10MB
       max-file-size: 100MB
       max-request-size: 105MB
+  # ---------------------------------------------------------------------------
+  # Flyway：数据库结构版本化管理
+  #   迁移脚本：src/main/resources/db/migration/V1__baseline_schema.sql
+  #                                              V2__multi_tenant_scope_and_error_log.sql
+  #   全新库：按版本顺序执行全部脚本
+  #   已有库：首次启动会被标记为基线版本 1（不重复建表），之后只执行 V2 及更新脚本
+  #   如需临时关闭（例如手工执行 db/schema.sql），把 enabled 改为 false 即可
+  # ---------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 1
+    baseline-description: baseline schema
+    validate-on-migrate: true
+    out-of-order: false
 server:
   port: 8080
   servlet:
@@ -60,7 +76,8 @@ server:
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
-    # 生产环境请改为 org.apache.ibatis.logging.nologging.NoLoggingImpl
+    # 生产环境请改为 org.apache.ibatis.logging.nologging.NoLoggingImpl  关闭SQL打印
+    # 开发环境控制台打印完整SQL日志 org.apache.ibatis.logging.stdout.StdOutImpl
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
   global-config:
     db-config:

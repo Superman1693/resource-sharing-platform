@@ -180,6 +180,8 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
         Comment comment = new Comment();
         comment.setNoteId(noteId);
+        // 多租户：评论的 star_id 由所属笔记派生（笔记为全平台公开内容时为空）
+        comment.setStarId(note.getStarId());
         comment.setUserId(loginUser.getId());
         comment.setContent(content);
         comment.setStatus(resolveModerationStatus(content, CommentStatus.PENDING.getCode()));
@@ -246,6 +248,8 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
         Comment comment = new Comment();
         comment.setNoteId(noteId);
+        // 多租户：评论的 star_id 由所属笔记派生（笔记为全平台公开内容时为空）
+        comment.setStarId(note.getStarId());
         comment.setUserId(loginUser.getId());
         comment.setContent(content);
         comment.setParentId(commentId);

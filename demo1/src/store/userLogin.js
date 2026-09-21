@@ -5,6 +5,7 @@ import { userLogin as apiLogin } from '../utils/api'
 import { userLogout as apiLogout } from '../utils/api'
 import { message } from 'ant-design-vue'
 import { useNotificationStore } from './notification'
+import { clearStarScope } from '../utils/starScope'
 
 export const useUserStore = defineStore('userLogin', {
   state: () => ({
@@ -69,6 +70,8 @@ export const useUserStore = defineStore('userLogin', {
         try {
           useNotificationStore().disconnect()
         } catch (e) { /* 忽略 */ }
+        // 登出时清除星球作用域：避免下一个登录用户继承上一个用户的星球上下文
+        clearStarScope()
         // $reset() 会重置 state 到初始值，persist 插件会同步清除 localStorage
         this.$reset()
       }

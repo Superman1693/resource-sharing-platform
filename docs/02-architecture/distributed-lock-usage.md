@@ -2,44 +2,53 @@
 
 ## 一、已添加分布式锁的接口
 
-### 🔴 严重级别（防止数据不一致）
+全部锁的 `waitTime` 均为 `0`（不等待，拿不到锁立即失败）。当前共 **16 处** `@PreventDuplicate`：
 
-| 接口 | 文件 | 锁参数 | 说明 |
-|------|------|--------|------|
-| 点赞笔记 | `NoteController.java` | `waitTime=0, leaseTime=3` | 防止重复点赞 |
-| 点赞评论 | `CommentController.java` | `waitTime=0, leaseTime=3` | 防止重复点赞 |
-| 关注用户 | `FollowController.java` | `waitTime=0, leaseTime=3` | 防止 TOCTOU 竞态 |
-| 取消关注 | `FollowController.java` | `waitTime=0, leaseTime=3` | 防止重复操作 |
-| 加入星球 | `StarController.java` | `waitTime=0, leaseTime=5` | 防止 TOCTOU + 非原子计数 |
-| 退出星球 | `StarController.java` | `waitTime=0, leaseTime=5` | 防止非原子计数 |
+### 🔴 严重级别（防止数据不一致，`leaseTime = 3`）
 
-### 🟡 中等级别（防止重复提交）
+| 接口 | 文件 · 方法 | 说明 |
+|------|-------------|------|
+| 点赞笔记 | `NoteController.likeNote` | 防止重复点赞 |
+| 点赞评论 | `CommentController.likeComment` | 防止重复点赞 |
+| 收藏笔记 | `CollectionController.toggle` | 防止重复收藏 |
+| 关注用户 | `FollowController.follow` | 防止 TOCTOU 竞态 |
+| 取消关注 | `FollowController.unfollow` | 防止重复操作 |
+| 添加评论 | `CommentController.addComment` | 防止重复提交 |
+| 回复评论 | `CommentController.replyComment` | 防止重复提交 |
+| 发送私信 | `MessageController.send` | 防止重复发送 |
 
-| 接口 | 文件 | 锁参数 | 说明 |
-|------|------|--------|------|
-| 创建笔记 | `NoteController.java` | `waitTime=0, leaseTime=5` | 防止重复提交 |
-| 置顶笔记 | `NoteController.java` | `waitTime=0, leaseTime=5` | 防止超发置顶名额 |
-| 举报笔记 | `NoteController.java` | `waitTime=0, leaseTime=5` | 防止重复举报 |
-| 添加评论 | `CommentController.java` | `waitTime=0, leaseTime=3` | 防止重复提交 |
-| 回复评论 | `CommentController.java` | `waitTime=0, leaseTime=3` | 防止重复提交 |
-| 举报评论 | `CommentController.java` | `waitTime=0, leaseTime=5` | 防止重复举报 |
-| 添加资源 | `ResourceController.java` | `waitTime=0, leaseTime=5` | 防止重复提交 |
-| 发送私信 | `MessageController.java` | `waitTime=0, leaseTime=3` | 防止重复发送 |
+### 🟡 中等级别（防止重复提交 / 名额超发，`leaseTime = 5`）
+
+| 接口 | 文件 · 方法 | 说明 |
+|------|-------------|------|
+| 创建笔记 | `NoteController.createNote` | 防止重复提交 |
+| 置顶笔记 | `NoteController.topNote` | 防止超发置顶名额（`keyPrefix = prevent_duplicate:topNote`） |
+| 举报笔记 | `NoteController.reportNote` | 防止重复举报 |
+| 举报评论 | `CommentController.reportComment` | 防止重复举报 |
+| 添加资源 | `ResourceController.addResource` | 防止重复提交 |
+| 加入星球 | `StarController.joinStar` | 防止 TOCTOU + 非原子计数 |
+| 退出星球 | `StarController.exitStar` | 防止非原子计数 |
+| 创建星球 | `StarController.createStar` | 防止重复创建 |
 
 ---
 
 ## 二、锁的 Key 格式
 
-锁的 Key 自动生成规则：
+锁 Key 由 `interceptor/PreventDuplicateAspect.buildLockKey()` 生成：
 
 ```
-{keyPrefix}:{useUserId ? "user:{userId}" : "ip:{clientIp}"}:{requestUri}:{methodName}
+{keyPrefix 或 prevent_duplicate}[:user:{userId} 或 :ip:{clientIp}]:uri:{requestUri}:method:{methodName}
 ```
+
+- `keyPrefix` 未填时默认用字符串 `prevent_duplicate`
+- 注解 `useUserId = true` 时追加 `:user:{userId}`；若取不到登录用户则追加 `:ip:{clientIp}`
 
 示例：
+
 ```
-prevent_duplicate:likeNote:uri:/api/note/like/123:user:1001
-prevent_duplicate:follow:uri:/api/follow/add:user:1001
+prevent_duplicate:user:1001:uri:/api/note/like/123:method:likeNote
+prevent_duplicate:user:1001:uri:/api/follow/add:method:follow
+prevent_duplicate:topNote:user:1001:uri:/api/note/top/123:method:topNote
 ```
 
 ---

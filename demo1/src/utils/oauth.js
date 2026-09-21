@@ -59,14 +59,22 @@ export const extractOAuthState = () => {
 
 /**
  * 跳转到 GitHub 授权页面
+ *
+ * 说明：后端返回的授权地址里没有 state，这里补上随机 state 并存入 sessionStorage，
+ * 回调页会用 validateOAuthState() 校验，防止 authorization code 被 CSRF 复用。
+ * 必须用整页跳转（window.location.href），保证 sessionStorage 与回调页同源同标签页。
  */
 export const redirectToGithub = async () => {
   const url = await getGithubOAuthUrl()
-  window.location.href = url
+  const state = generateState('github')
+  window.location.href = `${url}&state=${encodeURIComponent(state)}`
 }
 
 /**
  * 跳转到 QQ 授权页面
+ *
+ * 注意：QQ 互联的授权地址由后端拼好，并固定使用 state=qq_login
+ * （回调页据此识别 QQ 来源，因此该分支不做随机 state 校验）。
  */
 export const redirectToQQ = async () => {
   const url = await getQQOAuthUrl()

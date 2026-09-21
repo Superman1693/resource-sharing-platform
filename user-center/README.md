@@ -21,6 +21,8 @@
 
 编程知识星球是一个全栈的笔记资源分享平台，旨在为开发者提供一个学习交流的社区。用户可以发布笔记、分享资源、参与讨论、创建学习路径，并通过 AI 助手获取编程帮助。
 
+> 📚 项目文档已统一归入仓库根目录 [`docs/`](../docs/README.md)：技术深度解析、功能链路走查、接口文档、多级缓存与分布式锁指南等。
+
 ### ✨ 核心亮点
 
 - 🤖 **AI 智能助手** - 集成大语言模型，提供编程问答和代码建议
@@ -103,7 +105,6 @@
 | Axios | 1.x | HTTP 客户端 |
 | Marked | 17.x | Markdown 解析 |
 | Vditor | 3.x | Markdown 编辑器 |
-| ECharts | - | 图表可视化 |
 | highlight.js | 11.x | 代码高亮 |
 | DOMPurify | 3.x | XSS 防护 |
 
@@ -160,8 +161,7 @@ resource-sharing-platform/
 │   │       └── RedisChatOperator # Redis 聊天
 │   ├── src/main/resources/
 │   │   ├── application.yml     # 主配置
-│   │   ├── mapper/             # MyBatis XML
-│   │   └── db/                 # Flyway 迁移脚本
+│   │   └── mapper/             # MyBatis XML
 │   └── pom.xml
 │
 ├── demo1/                       # 前端项目
@@ -215,12 +215,12 @@ cd resource-sharing-platform
 ### 2. 数据库配置
 
 ```sql
--- 创建数据库
-CREATE DATABASE yiya DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-
--- 导入表结构
-mysql -u root -p yiya < demo1/database.sql
+-- 创建数据库并导入全部表结构（一条命令搞定）
+mysql -u root -p < db/schema.sql
 ```
+
+> `db/schema.sql` 是数据库的**唯一权威脚本**（建表 + 索引 + 初始化数据 + 增量升级），
+> 已整合原 `demo1/database.sql`、`demo1/migrate.sql` 与 `V2`~`V9` 迁移脚本。
 
 ### 3. 后端配置
 
@@ -406,26 +406,10 @@ bash test/distributed-lock-test.sh
 
 ## 📦 部署
 
-### Docker 部署（推荐）
-
-```bash
-# 构建后端
-cd user-center
-./mvnw clean package -DskipTests
-
-# 构建前端
-cd demo1
-npm run build
-
-# 使用 Docker Compose 启动
-docker-compose up -d
-```
-
-### 传统部署
-
-1. 打包后端：`mvn clean package -DskipTests`
-2. 运行：`java -jar target/user-center-1.0.1-SNAPSHOT.jar --spring.profiles.active=prod`
-3. 部署前端：将 `demo1/dist` 目录部署到 Nginx
+1. 打包后端：`cd user-center && ./mvnw clean package -DskipTests`
+2. 运行：`java -jar target/user-center-2.0.1-SNAPSHOT.jar --spring.profiles.active=prod`
+3. 构建前端：`cd demo1 && npm run build`
+4. 部署前端：将 `demo1/dist` 目录部署到 Nginx，并将 `/api` 反向代理到后端 `:8080`
 
 ---
 
@@ -467,12 +451,6 @@ docker-compose up -d
 - 后端遵循阿里巴巴 Java 开发手册
 - 前端使用 ESLint + Prettier
 - 提交信息使用 Conventional Commits 规范
-
----
-
-## 📄 许可证
-
-本项目采用 [MIT License](LICENSE) 开源许可证。
 
 ---
 

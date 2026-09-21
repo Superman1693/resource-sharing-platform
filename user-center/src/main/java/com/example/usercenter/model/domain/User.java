@@ -91,6 +91,16 @@ public class User {
     private Integer userRole;
 
     /**
+     * 当前所在星球ID（多租户上下文）
+     *
+     * <p>用户可能同时加入多个星球，这里记录「当前选中的那一个」，
+     * 作为登录签发 JWT 时 starId claim 的取值来源，
+     * 也作为未显式传 X-Star-Id 时的默认查询范围。
+     * 为空表示用户尚未选择（此时回退为最早加入的星球）。</p>
+     */
+    private Long currentStarId;
+
+    /**
      * 更新时间
      */
     private Date updateTime;

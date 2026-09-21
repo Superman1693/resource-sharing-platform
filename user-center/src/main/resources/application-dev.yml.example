@@ -4,7 +4,11 @@
 center:
   datasource:
     host: localhost
-    port: 3306
+    # ⚠️ 必须是 MySQL 8.0+：Flyway 9.x 社区版不支持 MySQL 5.7，
+    #    版本过低会导致 flywayInitializer 创建失败、应用无法启动
+    #    （报错：Flyway Teams Edition or MySQL upgrade required）。
+    #    本机开发库在 3307（MySQL 8.0）；若你的 MySQL 8.0 在 3306，请改回 3306。
+    port: 3307
     database: yiya
     driver-class-name: com.mysql.cj.jdbc.Driver
     username: your_mysql_username

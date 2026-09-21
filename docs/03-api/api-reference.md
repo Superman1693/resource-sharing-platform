@@ -1,6 +1,22 @@
-## 知识星球前端 RESTful API 接口文档（自动生成版）
+## 知识星球 RESTful API 接口文档
 
-> 说明：本接口文档依据当前前端代码实际调用的接口自动分析生成，可直接提供给后端实现。仅包含前端**真实发起 HTTP 请求**的接口，未在前端调用的功能不会在此文档中虚构。
+> 说明：本接口文档依据前端代码实际调用的接口分析生成。
+
+> **使用说明（2026-09-21 更新）**
+>
+> 本文档由两部分组成，请按需查阅：
+>
+> | 部分 | 内容 | 适用场景 |
+> |------|------|----------|
+> | **第一 ~ 十二章** | 前 35 个接口的**请求 / 响应详解**（参数、示例、数据模型） | 需要看具体字段与示例时 |
+> | **第十三章** | 从 `demo1/src/utils/api.js` **自动提取的全量 142 个接口清单**，分 23 个模块，并标注每条路径的后端匹配情况 | 查「有哪些接口」「路径叫什么」时 |
+>
+> **接口的权威来源始终是代码**：
+> - 前端调用清单 → `demo1/src/utils/api.js`（142 个接口函数）
+> - 后端接口定义 → `user-center/src/main/java/com/example/usercenter/controller/`（178 条路由映射）
+> - 交互式调试 → Swagger UI（随后端启动）：`http://localhost:8080/api/swagger-ui.html`
+>
+> 第一 ~ 十二章由前端较早版本分析生成，细节可能滞后于代码；**凡与代码冲突，以代码为准**。
 
 ---
 
@@ -1611,47 +1627,6 @@ if (info.file.status === "done") {
 
 ---
 
-### 11.3 获取销售统计数据
-
-#### 接口
-
-- **URL**：`GET /stats/sales`
-- **说明**：获取销售统计数据（仅管理员）。
-
-#### 查询参数
-
-- `startDate`：`string`，可选，开始日期
-- `endDate`：`string`，可选，结束日期
-- `channel`：`string`，可选，销售渠道（`web`、`mini`、`offline`）
-
-#### 响应
-
-```json
-{
-  "code": 0,
-  "data": {
-    "overview": [
-      { "title": "本月 GMV", "value": 186532, "unit": "元", "trend": "+12.5%" },
-      { "title": "支付订单数", "value": 3210, "unit": "单", "trend": "+8.1%" },
-      { "title": "退款金额", "value": 8650, "unit": "元", "trend": "-2.3%" },
-      { "title": "客单价", "value": 580, "unit": "元", "trend": "+3.4%" }
-    ],
-    "details": [
-      {
-        "id": 1,
-        "date": "2025-10-01",
-        "channel": "官网商城",
-        "orders": 320,
-        "gmv": 168530,
-        "refund": 3200
-      }
-    ]
-  }
-}
-```
-
----
-
 ## 十二、接口一览表（完整版）
 
 | 模块      | 接口路径                           | 方法 | 描述                            | 认证/权限要求              | 返回结构                                |
@@ -1691,11 +1666,281 @@ if (info.file.status === "done") {
 | 知识图谱  | `/knowledge/node/{nodeId}/content` | GET  | 获取节点内容                    | 已登录用户                 | `BaseResponse<Note[]>`                  |
 | 统计数据  | `/stats/data`                      | GET  | 获取数据统计概览                | 管理员                     | `BaseResponse<DataStats>`               |
 | 统计数据  | `/stats/user`                      | GET  | 获取用户统计数据                | 管理员                     | `BaseResponse<UserStats>`               |
-| 统计数据  | `/stats/sales`                     | GET  | 获取销售统计数据                | 管理员                     | `BaseResponse<SalesStats>`              |
 
 ---
 
-## 十三、数据模型定义
+## 十三、完整接口清单（142 个）
+
+> **本节由脚本从 `demo1/src/utils/api.js` 自动提取**，是前端**实际发起**的全部 HTTP 请求，
+> 覆盖前十二节未收录的收藏、标签、专栏、积分、举报、搜索、关注、私信、通知、
+> 知识星球、学习路径、AI 助手、后台管理等模块。
+>
+> 表中「后端」列表示能否在 `user-center` 的 Controller 中找到对应映射，
+> 经脚本静态比对，**142 / 142 全部匹配**（不含路径变量名差异）。
+> 因此：**前十二节是「样例级」详解，本节是「全量级」索引**；
+> 交互式调试请使用 Swagger UI（随后端启动，默认 `http://localhost:8080/api/swagger-ui.html`）。
+
+### 13.1 用户与认证（14 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `userRegister` | POST | `/user/register` | ✅ |
+| 2 | `userLogin` | POST | `/user/login` | ✅ |
+| 3 | `userLogout` | POST | `/user/userLogout` | ✅ |
+| 4 | `getCurrentUser` | GET | `/user/current` | ✅ |
+| 5 | `getPublicUser` | GET | `/user/public/${userId}` | ✅ |
+| 6 | `updateUser` | PUT | `/user/update` | ✅ |
+| 7 | `searchUsers` | GET | `/user/search` | ✅ |
+| 8 | `deleteUser` | POST | `/user/delete` | ✅ |
+| 9 | `uploadFile` | POST | `/user/upload` | ✅ |
+| 10 | `changePassword` | POST | `/user/changePassword` | ✅ |
+| 11 | `resetPassword` | POST | `/user/resetPassword` | ✅ |
+| 12 | `getUserList` | GET | `/user/search` | ✅ |
+| 13 | `uploadImage` | POST | `/user/upload/image` | ✅ |
+| 14 | `getUserGrowth` | GET | `/user/growth` | ✅ |
+
+### 13.2 笔记（12 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getNoteList` | GET | `/note/list` | ✅ |
+| 2 | `getNoteDetail` | GET | `/note/${id}` | ✅ |
+| 3 | `createNote` | POST | `/note/add` | ✅ |
+| 4 | `updateNote` | PUT | `/note/update/${id}` | ✅ |
+| 5 | `deleteNote` | POST | `/note/delete` | ✅ |
+| 6 | `reportNote` | POST | `/note/report/${Number(id)}` | ✅ |
+| 7 | `likeNote` | POST | `/note/like/${Number(id)}` | ✅ |
+| 8 | `incrementViewCount` | POST | `/note/view/${Number(id)}` | ✅ |
+| 9 | `topNote` | POST | `/note/top/${Number(id)}` | ✅ |
+| 10 | `getHotRank` | GET | `/note/hot` | ✅ |
+| 11 | `getMyNotes` | GET | `/note/my` | ✅ |
+| 12 | `getMyNoteDetail` | GET | `/note/my/${Number(id)}` | ✅ |
+
+### 13.3 内容（笔记 / 资源的统一检索入口）（1 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `searchContent` | GET | `/content/search` | ✅ |
+
+### 13.4 评论（8 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getCommentList` | GET | `/comment/list` | ✅ |
+| 2 | `addComment` | POST | `/comment/add` | ✅ |
+| 3 | `replyComment` | POST | `/comment/reply/${Number(commentId)}` | ✅ |
+| 4 | `deleteComment` | POST | `/comment/delete` | ✅ |
+| 5 | `approveComment` | POST | `/comment/approve` | ✅ |
+| 6 | `likeComment` | POST | `/comment/like/${Number(id)}` | ✅ |
+| 7 | `reportComment` | POST | `/comment/report` | ✅ |
+| 8 | `getMyComments` | GET | `/comment/my` | ✅ |
+
+### 13.5 资源（11 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getResourceList` | GET | `/resource/list` | ✅ |
+| 2 | `getResourceDetail` | GET | `/resource/${Number(id)}` | ✅ |
+| 3 | `addResource` | POST | `/resource/add` | ✅ |
+| 4 | `updateResource` | PUT | `/resource/update/${id}` | ✅ |
+| 5 | `deleteResource` | POST | `/resource/delete` | ✅ |
+| 6 | `uploadResourceFile` | POST | `/resource/upload` | ✅ |
+| 7 | `downloadResource` | GET | `/resource/download/${id}` | ✅ |
+| 8 | `getResourceContent` | GET | `/resource/content/${Number(id)}` | ✅ |
+| 9 | `toggleResourceStatus` | POST | `/resource/toggleStatus` | ✅ |
+| 10 | `reviewResource` | POST | `/resource/review` | ✅ |
+| 11 | `getMyResources` | GET | `/resource/my` | ✅ |
+
+### 13.6 知识图谱（4 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getKnowledgeMap` | GET | `/knowledge/map` | ✅ |
+| 2 | `saveKnowledgeMap` | POST | `/knowledge/map/save` | ✅ |
+| 3 | `syncKnowledgeMap` | POST | `/knowledge/map/sync` | ✅ |
+| 4 | `getKnowledgeNodeContent` | GET | `/knowledge/node/${encodeURIComponent(nodeId)}/content` | ✅ |
+
+### 13.7 统计分析（7 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getDataStats` | GET | `/stats/data` | ✅ |
+| 2 | `getUserStats` | GET | `/stats/user` | ✅ |
+| 3 | `getPersonalStats` | GET | `/stats/personal` | ✅ |
+| 4 | `getMyLikes` | GET | `/stats/myLikes` | ✅ |
+| 5 | `getContributionData` | GET | `/stats/contribution` | ✅ |
+| 6 | `getLearningTrend` | GET | `/stats/trend` | ✅ |
+| 7 | `getStatsOverview` | GET | `/stats/overview` | ✅ |
+
+### 13.8 验证码（1 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getCaptcha` | GET | `/captcha/get` | ✅ |
+
+### 13.9 AI 助手（8 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getChatSessions` | GET | `/chat/sessions` | ✅ |
+| 2 | `getChatSession` | GET | `/chat/session/${sessionId}` | ✅ |
+| 3 | `createChatSession` | POST | `/chat/session` | ✅ |
+| 4 | `updateChatSession` | PUT | `/chat/session` | ✅ |
+| 5 | `deleteChatSession` | DELETE | `/chat/session/${sessionId}` | ✅ |
+| 6 | `getChatMessages` | GET | `/chat/messages/${sessionId}` | ✅ |
+| 7 | `sendChatMessage` | POST | `/chat/message` | ✅ |
+| 8 | `markMessageAsRead` | PUT | `/chat/message/${messageId}/read` | ✅ |
+
+### 13.10 后台管理（13 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `banUser` | POST | `/admin/user/ban/${Number(id)}` | ✅ |
+| 2 | `unbanUser` | POST | `/admin/user/unban/${Number(id)}` | ✅ |
+| 3 | `getPendingContent` | GET | `/admin/content/pending` | ✅ |
+| 4 | `approveNote` | POST | `/admin/note/approve/${Number(id)}` | ✅ |
+| 5 | `rejectNote` | POST | `/admin/note/reject/${Number(id)}` | ✅ |
+| 6 | `adminGetStarList` | GET | `/admin/star/list` | ✅ |
+| 7 | `adminCreateStar` | POST | `/admin/star/create` | ✅ |
+| 8 | `adminUpdateStar` | PUT | `/admin/star/update/${Number(id)}` | ✅ |
+| 9 | `adminDeleteStar` | DELETE | `/admin/star/delete/${Number(id)}` | ✅ |
+| 10 | `adminToggleStarStatus` | POST | `/admin/star/toggle/${Number(id)}` | ✅ |
+| 11 | `getSensitiveWords` | GET | `/admin/sensitive/words` | ✅ |
+| 12 | `updateSensitiveWords` | PUT | `/admin/sensitive/words` | ✅ |
+| 13 | `reloadSensitiveWords` | POST | `/admin/sensitive/reload` | ✅ |
+
+### 13.11 知识星球（11 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getStarList` | GET | `/star/list` | ✅ |
+| 2 | `getHotStars` | GET | `/star/hot` | ✅ |
+| 3 | `getMyStars` | GET | `/star/my` | ✅ |
+| 4 | `getStarDetail` | GET | `/star/${Number(id)}` | ✅ |
+| 5 | `updateStarAnnouncement` | POST | `/star/${Number(id)}/announcement` | ✅ |
+| 6 | `getStarMembers` | GET | `/star/${Number(id)}/members` | ✅ |
+| 7 | `joinStar` | POST | `/star/join/${Number(id)}` | ✅ |
+| 8 | `exitStar` | POST | `/star/exit/${Number(id)}` | ✅ |
+| 9 | `removeStarMember` | POST | `/star/${Number(starId)}/members/${Number(userId)}/remove` | ✅ |
+| 10 | `createStar` | POST | `/star/create` | ✅ |
+| 11 | `getStarFeed` | GET | `/star/feed` | ✅ |
+
+### 13.12 站内通知（4 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getNotificationList` | GET | `/notification/list` | ✅ |
+| 2 | `getUnreadNotificationCount` | GET | `/notification/unread/count` | ✅ |
+| 3 | `markNotificationRead` | PUT | `/notification/${id}/read` | ✅ |
+| 4 | `markAllNotificationsRead` | PUT | `/notification/read/all` | ✅ |
+
+### 13.13 全局搜索（6 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `searchNotes` | GET | `/search/notes` | ✅ |
+| 2 | `searchResources` | GET | `/search/resources` | ✅ |
+| 3 | `syncNotesToEs` | POST | `/search/sync/notes` | ✅ |
+| 4 | `syncResourcesToEs` | POST | `/search/sync/resources` | ✅ |
+| 5 | `getHotKeywords` | GET | `/search/hot` | ✅ |
+| 6 | `searchPublicUsers` | GET | `/search/users` | ✅ |
+
+### 13.14 私信（6 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getConversationList` | GET | `/message/conversations` | ✅ |
+| 2 | `getMessageHistory` | GET | `/message/history` | ✅ |
+| 3 | `sendMessage` | POST | `/message/send` | ✅ |
+| 4 | `getUnreadMessageCount` | GET | `/message/unread/count` | ✅ |
+| 5 | `markConversationRead` | POST | `/message/read/${conversationId}` | ✅ |
+| 6 | `getOrCreateConversation` | POST | `/message/conversation/${userId}` | ✅ |
+
+### 13.15 学习路径（3 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getLearningPaths` | GET | `/learning-path/list` | ✅ |
+| 2 | `getLearningPathDetail` | GET | `/learning-path/${id}` | ✅ |
+| 3 | `updatePathNodeStatus` | POST | `/learning-path/node/status` | ✅ |
+
+### 13.16 关注 / 粉丝（5 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `followUser` | POST | `/follow/add` | ✅ |
+| 2 | `unfollowUser` | POST | `/follow/delete` | ✅ |
+| 3 | `getFollowList` | GET | `/follow/list` | ✅ |
+| 4 | `getFollowerList` | GET | `/follow/follower/list` | ✅ |
+| 5 | `checkFollowStatus` | GET | `/follow/status` | ✅ |
+
+### 13.17 第三方登录（OAuth）（4 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getGithubAuthUrl` | GET | `/oauth/github/url` | ✅ |
+| 2 | `githubLogin` | POST | `/oauth/github` | ✅ |
+| 3 | `getQQAuthUrl` | GET | `/oauth/qq/url` | ✅ |
+| 4 | `qqLogin` | POST | `/oauth/qq` | ✅ |
+
+### 13.18 收藏夹（3 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `toggleCollectNote` | POST | `/collection/${noteId}` | ✅ |
+| 2 | `checkCollected` | GET | `/collection/check/${noteId}` | ✅ |
+| 3 | `getMyCollections` | GET | `/collection/my` | ✅ |
+
+### 13.19 标签体系（4 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getTagList` | GET | `/tag/list` | ✅ |
+| 2 | `getNotesByTag` | GET | `/tag/${encodeURIComponent(name)}/notes` | ✅ |
+| 3 | `suggestTags` | GET | `/tag/suggest` | ✅ |
+| 4 | `migrateTags` | POST | `/tag/migrate` | ✅ |
+
+### 13.20 积分 / 签到（6 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `signIn` | POST | `/points/sign` | ✅ |
+| 2 | `checkSignedToday` | GET | `/points/sign/today` | ✅ |
+| 3 | `getPointsAccount` | GET | `/points/account` | ✅ |
+| 4 | `getPointsLog` | GET | `/points/log` | ✅ |
+| 5 | `getSignCalendar` | GET | `/points/sign/calendar` | ✅ |
+| 6 | `migratePoints` | POST | `/points/migrate` | ✅ |
+
+### 13.21 举报（2 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getReportList` | GET | `/report/list` | ✅ |
+| 2 | `handleReport` | POST | `/report/handle/${Number(id)}` | ✅ |
+
+### 13.22 专栏 / 合集（8 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `createColumn` | POST | `/column/add` | ✅ |
+| 2 | `updateColumn` | PUT | `/column/update/${Number(id)}` | ✅ |
+| 3 | `deleteColumn` | DELETE | `/column/delete/${Number(id)}` | ✅ |
+| 4 | `getColumnList` | GET | `/column/list` | ✅ |
+| 5 | `getColumnDetail` | GET | `/column/${Number(id)}` | ✅ |
+| 6 | `addNoteToColumn` | POST | `/column/note/add` | ✅ |
+| 7 | `removeNoteFromColumn` | POST | `/column/note/remove` | ✅ |
+| 8 | `getMyColumns` | GET | `/column/my` | ✅ |
+
+### 13.23 推荐（1 个）
+
+| # | 前端方法 | HTTP | 路径 | 后端 |
+|---|----------|------|------|:----:|
+| 1 | `getRecommendList` | GET | `/recommend/list` | ✅ |
+
+> 合计 **142** 个接口，分属 **23** 个模块。
+
+---
+## 十四、数据模型定义
 
 ### Note（笔记/内容）
 
@@ -1789,13 +2034,14 @@ interface KnowledgeEdge {
 
 ---
 
-## 十四、总结
+## 十五、总结
 
-- ✅ 所有前端组件已更新为使用真实接口调用
-- ✅ 所有接口已补充完整文档说明
+- ✅ 前端全部 142 个接口调用已通过 `src/utils/api.js` 统一收敛（含 `request` 拦截器统一注入 Token）
+- ✅ 每个接口均列入第十三章的完整清单，并与后端路由逐条比对**全部匹配**
 - ✅ 统一使用 `BaseResponse<T>` 返回结构
 - ✅ 统一错误处理机制（`isBusinessError`、`code`、`description`）
 - ✅ RESTful 风格接口路径
-- ✅ 完整的请求参数和响应结构说明
+- ⚠️ 第一 ~ 十二章的字段级详解只覆盖其中 35 个接口；其余接口的字段说明请查看 Swagger UI 或对应 Controller
 
-后端开发人员可直接参考本文档实现所有接口。
+**因此：** 本文档可作为「接口全景索引」使用；若要逐字段对接，
+请以 Swagger UI（`http://localhost:8080/api/swagger-ui.html`）与各 Controller 的注解为最终依据。

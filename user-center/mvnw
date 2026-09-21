@@ -147,6 +147,43 @@ MAVEN_HOME="${MAVEN_USER_HOME}/wrapper/dists/${distributionUrlNameMain-}/$(hash_
 
 exec_maven() {
   unset MVNW_VERBOSE MVNW_USERNAME MVNW_PASSWORD MVNW_REPOURL || :
+  # ---------------------------------------------------------------------------
+  # Windows（Git Bash / MSYS / MINGW）兼容修正 —— 本项目补丁，非官方脚本内容
+  #
+  # 问题：发行版自带的 bin/mvn 在 MINGW 环境下会把 MAVEN_HOME 归一化成 /c/... 形式，
+  #       而 Windows 版 java.exe 无法识别 Unix 风格路径，结果必然报
+  #         ClassNotFoundException: org.codehaus.plexus.classworlds.launcher.Launcher
+  #       （同理，/f/maven/.../bin/mvn 直接调用也会踩同一个坑）。
+  #
+  # 处理：检测到 cygpath（即 Windows 环境）时，直接用 Windows 路径启动
+  #       classworlds launcher，绕开发行版脚本的路径归一化。
+  #       非 Windows 平台会跳过本分支，行为与官方脚本完全一致。
+  # ---------------------------------------------------------------------------
+  if command -v cygpath >/dev/null 2>&1; then
+    # 【坑】本脚本第 32 行是 `set -euf`，其中 -f 即 noglob，会**关闭通配符展开**，
+    #      因此这里绝不能用 "*.jar" 这类 glob（未展开的字符串会让 [ -f ] 恒为假），
+    #      必须用 find 来定位 classworlds jar。
+    _mvn_cw_jar="$(find "$MAVEN_HOME/boot" -maxdepth 1 -name 'plexus-classworlds-*.jar' -print -quit 2>/dev/null || true)"
+    if [ -n "$_mvn_cw_jar" ]; then
+      # JAVA_HOME 可能被写成 Windows 风格（D:\...）或 Unix 风格（/d/...），统一成 Unix 风格
+      _mvn_java_home=""
+      if [ -n "${JAVA_HOME-}" ]; then
+        _mvn_java_home="$(cygpath --unix "${JAVA_HOME}" 2>/dev/null || printf '%s' "${JAVA_HOME}")"
+      fi
+      _mvn_java="${_mvn_java_home}/bin/java"
+      [ -x "$_mvn_java" ] || _mvn_java="java"
+      _mvn_home_native="$(cygpath --windows "$MAVEN_HOME")"
+      _mvn_jar_native="$(cygpath --windows "$_mvn_cw_jar")"
+      _mvn_proj_native="$(cygpath --windows "${MAVEN_PROJECTBASEDIR:-$PWD}")"
+      exec "$_mvn_java" \
+        -classpath "$_mvn_jar_native" \
+        "-Dclassworlds.conf=${_mvn_home_native}/bin/m2.conf" \
+        "-Dmaven.home=${_mvn_home_native}" \
+        "-Dmaven.multiModuleProjectDirectory=${_mvn_proj_native}" \
+        org.codehaus.plexus.classworlds.launcher.Launcher "$@" \
+        || die "cannot exec maven via classworlds launcher"
+    fi
+  fi
   exec "$MAVEN_HOME/bin/$MVN_CMD" "$@" || die "cannot exec $MAVEN_HOME/bin/$MVN_CMD"
 }
 

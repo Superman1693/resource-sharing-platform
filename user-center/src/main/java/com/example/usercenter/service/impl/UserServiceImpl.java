@@ -3,8 +3,10 @@ package com.example.usercenter.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.example.usercenter.common.ErrorCode;
+import com.example.usercenter.contant.UserConstant;
 import com.example.usercenter.exception.BusinessException;
 import com.example.usercenter.model.domain.User;
+import com.example.usercenter.model.domain.StarMember;
 import com.example.usercenter.model.domain.request.UserRegisterRequest;
 import com.example.usercenter.model.domain.request.UserResetPasswordRequest;
 import com.example.usercenter.model.dto.LoginUserDTO;
@@ -57,6 +59,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     @Resource
     private JwtUtils jwtUtils;
+
+    @Resource
+    private com.example.usercenter.mapper.StarMemberMapper starMemberMapper;
 
     @Resource
     private com.example.usercenter.service.CaptchaService captchaService;
@@ -175,6 +180,10 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
             log.trace("user login failed, userAccount not found");
             return null;
         }
+        // 第三方登录账号没有可用密码：给出明确提示，而不是笼统的「用户名或密码错误」
+        if (UserConstant.OAUTH_PASSWORD_PLACEHOLDER.equals(user.getUserPassword())) {
+            throw new BusinessException(ErrorCode.LOGIN_FAILED, "该账号由第三方平台创建，请使用 GitHub / QQ 登录");
+        }
         // 验证密码：判断是否为 BCrypt 格式
         boolean passwordMatch;
         if (user.getUserPassword().startsWith("$2a$")) {
@@ -201,6 +210,56 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         // 3.用户脱敏
         User safetyUser = getSafetyUser(user);
         return safetyUser;
+    }
+
+    @Override
+    public Long resolveCurrentStarId(Long userId) {
+        if (userId == null) {
+            return null;
+        }
+        User user = userMapper.selectById(userId);
+        if (user != null && user.getCurrentStarId() != null) {
+            return user.getCurrentStarId();
+        }
+        // 回退：取最早加入的星球，并回写为「当前星球」，后续无需重复推导
+        Long fallbackStarId = starMemberMapper.selectPrimaryStarId(userId);
+        if (fallbackStarId != null) {
+            User patch = new User();
+            patch.setId(userId);
+            patch.setCurrentStarId(fallbackStarId);
+            userMapper.updateById(patch);
+        }
+        return fallbackStarId;
+    }
+
+    @Override
+    public String switchCurrentStar(Long starId) {
+        if (starId == null || starId <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "星球ID不合法");
+        }
+        LoginUserDTO loginUser = UserContext.get();
+        if (loginUser == null || loginUser.getUserId() == null) {
+            throw new BusinessException(ErrorCode.NOT_LOGIN, "请先登录");
+        }
+
+        // 校验成员身份：必须是该星球的成员才能切换
+        QueryWrapper<StarMember> wrapper = new QueryWrapper<>();
+        wrapper.eq("star_id", starId).eq("user_id", loginUser.getUserId());
+        Long count = starMemberMapper.selectCount(wrapper);
+        if (count == null || count == 0) {
+            throw new BusinessException(ErrorCode.NO_AUTH, "你尚未加入该星球");
+        }
+
+        // 更新当前星球
+        User patch = new User();
+        patch.setId(loginUser.getUserId());
+        patch.setCurrentStarId(starId);
+        userMapper.updateById(patch);
+
+        // 重新签发 Token：旧 Token 里的 starId 是登录时的快照，必须刷新
+        User user = userMapper.selectById(loginUser.getUserId());
+        long expirationSeconds = jwtUtils.getExpiration();
+        return jwtUtils.generateToken(user.getId(), user.getUserRole(), starId, expirationSeconds);
     }
 
     /**

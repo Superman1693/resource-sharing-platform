@@ -34,10 +34,22 @@
 
 ## 二、缓存策略
 
-| 缓存名称 | L1 TTL | L2 TTL | 最大条数 | 适用场景 |
-|---------|--------|--------|----------|----------|
-| `noteList` | 2分钟 | 5分钟 | 500 | 笔记列表（变化频繁） |
-| `noteDetail` | 5分钟 | 10分钟 | 1000 | 笔记详情（读多写少） |
+**L1（Caffeine）是全局统一配置**，不按缓存名单独设置：
+
+`initialCapacity = 200`、`maximumSize = 5000`、`expireAfterWrite = 5 分钟`、`expireAfterAccess = 2 分钟`、开启 `recordStats`。
+
+**L2（Redis）按缓存名分别设置 TTL**（见 `CacheConfig.redisCacheManager`）：
+
+| 缓存名称 | L2 TTL | 适用场景 |
+|---------|--------|----------|
+| `noteList` | 5 分钟 | 笔记列表（变化较频繁） |
+| `noteDetail` | 10 分钟 | 笔记详情（读多写少） |
+| `hotRank` | 2 分钟 | 热榜（实时性要求高） |
+| `userInfo` | 30 分钟 | 用户信息（相对稳定） |
+| `starList` | 15 分钟 | 星球列表 |
+| 未单独配置的缓存名 | 10 分钟 | 默认 TTL |
+
+Redis key 前缀为 `cache:{cacheName}:`，且不缓存 null 值。
 
 ---
 
@@ -87,12 +99,14 @@ POST /api/cache/evictAll
 
 ---
 
-## 四、性能对比
+## 四、性能对比（量级参考，非实测基准）
 
-| 接口 | 无缓存 | L1 命中 | 性能提升 |
+| 接口 | 无缓存 | L1 命中 | 量级提升 |
 |------|--------|---------|----------|
-| 笔记列表 | ~200ms | ~70ms | **65%** |
-| 笔记详情 | ~300ms | ~120ms | **60%** |
+| 笔记列表 | ~200ms | ~70ms | 约 65% |
+| 笔记详情 | ~300ms | ~120ms | 约 60% |
+
+> 上表为设计阶段的量级估计，实际数值请用 `/api/cache/stats` 的命中率与压测结果为准。
 
 ---
 
@@ -104,18 +118,21 @@ POST /api/cache/evictAll
 
 ```java
 Caffeine.newBuilder()
-    .initialCapacity(100)      // 初始容量
-    .maximumSize(2000)         // 最大缓存条数
-    .expireAfterWrite(5, MINUTES)  // 写入后过期
-    .expireAfterAccess(2, MINUTES) // 访问后过期
-    .recordStats()             // 开启统计
+    .initialCapacity(200)           // 初始容量
+    .maximumSize(5000)              // 最大缓存条数（全局统一）
+    .expireAfterWrite(5, MINUTES)   // 写入后过期
+    .expireAfterAccess(2, MINUTES)  // 访问后过期
+    .recordStats()                  // 开启统计
 ```
 
 ### 5.2 Redis TTL 配置
 
 ```java
-configMap.put("noteList", defaultConfig.entryTtl(Duration.ofMinutes(5)));
+configMap.put("noteList",   defaultConfig.entryTtl(Duration.ofMinutes(5)));
 configMap.put("noteDetail", defaultConfig.entryTtl(Duration.ofMinutes(10)));
+configMap.put("hotRank",    defaultConfig.entryTtl(Duration.ofMinutes(2)));
+configMap.put("userInfo",   defaultConfig.entryTtl(Duration.ofMinutes(30)));
+configMap.put("starList",   defaultConfig.entryTtl(Duration.ofMinutes(15)));
 ```
 
 ---

@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useUserStore } from '../store/userLogin'
+import { setStarScope, clearStarScope } from '../utils/starScope'
 
 
 const BasicLayout = () => import('../layouts/BasicLayout.vue')
@@ -140,9 +141,40 @@ const router = createRouter({
   }
 })
 
+// ===== 星球作用域同步 =====
+// 进入星球相关页面时把星球ID写入作用域（由 request.js 附加为 X-Star-Id 请求头），
+// 后端据此对 note / comment / note_column / knowledge_map 追加 star_id 条件，
+// 使多租户行级隔离真正生效；离开这些页面则清除，保证首页/搜索/热榜仍可跨星球浏览。
+//
+// 注意：这里只登记「用户端」的星球页面。管理端（/main/*）刻意不设置作用域，
+//       因为后台需要跨星球查看全部数据。
+const ROUTE_STAR_PARAM = {
+  UserStarDetail: 'id',        // /user/starDetail/:id
+  UserKnowledgeMap: 'starId'   // /user/knowledgeMap/:starId?
+}
+
+const syncStarScopeFromRoute = (to) => {
+  const paramName = ROUTE_STAR_PARAM[to.name]
+  if (!paramName) {
+    clearStarScope()
+    return
+  }
+  const raw = to.params[paramName]
+  const starId = raw === undefined || raw === null || raw === '' ? NaN : Number(raw)
+  if (Number.isInteger(starId) && starId > 0) {
+    setStarScope(starId)
+  } else {
+    // 形如 /user/knowledgeMap（未指定星球）→ 保持全平台范围
+    clearStarScope()
+  }
+}
+
 // ===== 路由守卫：免登浏览，按需登录 =====
 router.beforeEach((to, from, next) => {
   const userStore = useUserStore()
+
+  // 先同步星球作用域（与登录态无关，匿名浏览星球也应带上）
+  syncStarScopeFromRoute(to)
 
   let isAuthenticated = false
   let isAdmin = false

@@ -7,24 +7,31 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.example.usercenter.common.BaseResponse;
 import com.example.usercenter.common.ErrorCode;
 import com.example.usercenter.common.ResultUtils;
+import com.example.usercenter.contant.UserConstant;
 import com.example.usercenter.exception.BusinessException;
+import com.example.usercenter.mapper.StarMemberMapper;
 import com.example.usercenter.mapper.UserMapper;
+import com.example.usercenter.service.UserService;
 import com.example.usercenter.model.domain.User;
 import com.example.usercenter.model.domain.request.GitHubLoginRequest;
 import com.example.usercenter.model.domain.request.QQLoginRequest;
 import com.example.usercenter.utils.JwtUtils;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -40,6 +47,8 @@ import java.util.regex.Pattern;
 public class OAuthController {
 
     private final UserMapper userMapper;
+    private final StarMemberMapper starMemberMapper;
+    private final UserService userService;
     private final JwtUtils jwtUtils;
 
     @Value("${github.oauth.client-id}")
@@ -60,15 +69,75 @@ public class OAuthController {
     @Value("${qq.oauth.redirect-uri}")
     private String qqRedirectUri;
 
+    private final Environment environment;
+
+    /**
+     * 启动时校验第三方登录配置。
+     *
+     * <p><b>为什么需要：</b>OAuth 最典型的故障是「回调地址与开放平台登记的不一致」，
+     * 而这类错误只有等用户点击登录、被重定向之后才会暴露（症状是浏览器报
+     * 「localhost 拒绝连接」或跳回登录页）。把校验提前到启动阶段，可以更早发现问题。</p>
+     *
+     * <p>校验规则：</p>
+     * <ol>
+     *   <li>打印本次生效的 profile 与两个回调地址，便于与开放平台逐字比对；</li>
+     *   <li>client-id/secret 为空 → 告警（对应渠道登录将不可用）；</li>
+     *   <li><b>prod 环境回调地址仍指向 localhost → 报错</b>（线上必然失败）；</li>
+     *   <li>dev 环境则提示需保持前端 5173 端口与开放平台登记一致。</li>
+     * </ol>
+     */
+    @PostConstruct
+    public void validateOAuthConfig() {
+        List<String> activeProfiles = Arrays.asList(environment.getActiveProfiles());
+        boolean prod = activeProfiles.contains("prod");
+
+        log.info("[OAuth] 配置检查 —— profile={}, GitHub 回调地址={}, QQ 回调地址={}",
+                activeProfiles.isEmpty() ? "default" : String.join(",", activeProfiles),
+                redirectUri, qqRedirectUri);
+
+        if (StringUtils.isBlank(clientId) || StringUtils.isBlank(clientSecret)) {
+            log.warn("[OAuth] GitHub 的 client-id / client-secret 未配置，GitHub 登录将不可用");
+        }
+        if (StringUtils.isBlank(qqAppId) || StringUtils.isBlank(qqAppKey)) {
+            log.warn("[OAuth] QQ 的 app-id / app-key 未配置，QQ 登录将不可用");
+        }
+
+        if (prod && (isLocalhost(redirectUri) || isLocalhost(qqRedirectUri))) {
+            log.error("[OAuth] 生产环境（prod）的回调地址仍指向 localhost，第三方登录必定失败！"
+                            + "GitHub={}, QQ={}。请在 application-prod.yml 中改为真实域名，"
+                            + "并确保与开放平台登记的回调地址完全一致。",
+                    redirectUri, qqRedirectUri);
+        } else if (!prod && isLocalhost(redirectUri)) {
+            log.info("[OAuth] 本地开发回调地址为 {}；请确认 GitHub OAuth App 的 "
+                            + "Authorization callback URL 与此完全一致，且前端 dev server 使用 "
+                            + "vite.config.js 中固定的 5173 端口（strictPort 已开启，端口被占用会直接报错而非静默改端口）",
+                    redirectUri);
+        }
+    }
+
+    /**
+     * 判断回调地址是否指向本机
+     */
+    private boolean isLocalhost(String uri) {
+        if (StringUtils.isBlank(uri)) {
+            return false;
+        }
+        String lower = uri.toLowerCase();
+        return lower.contains("localhost") || lower.contains("127.0.0.1");
+    }
+
     /**
      * 获取 GitHub OAuth 授权 URL
      */
     @GetMapping("/github/url")
     @Operation(summary = "获取 GitHub 授权地址")
     public BaseResponse<Map<String, String>> getGithubAuthUrl() {
+        // redirect_uri 必须与 GitHub OAuth App 里登记的 Authorization callback URL 完全一致；
+        // 这里做 URL 编码，避免 :// 等字符干扰 query 参数解析（与下方 QQ 的处理保持一致）。
+        String encodedRedirectUri = URLEncoder.encode(redirectUri, StandardCharsets.UTF_8);
         String url = "https://github.com/login/oauth/authorize"
                 + "?client_id=" + clientId
-                + "&redirect_uri=" + redirectUri
+                + "&redirect_uri=" + encodedRedirectUri
                 + "&scope=read:user+user:email";
         Map<String, String> result = new HashMap<>();
         result.put("url", url);
@@ -160,7 +229,7 @@ public class OAuthController {
             user.setUsername(StringUtils.isNotBlank(name) ? name : githubLogin);
             user.setAvatarUrl(avatarUrl);
             user.setEmail(email);
-            user.setUserPassword(""); // GitHub 登录用户无密码
+            user.setUserPassword(UserConstant.OAUTH_PASSWORD_PLACEHOLDER); // 第三方登录账号无可用密码
             user.setUserRole(0); // 普通用户
             user.setUserStatus(0); // 正常状态
             user.setCreateTime(new Date());
@@ -181,7 +250,10 @@ public class OAuthController {
 
         // 5. 生成 JWT token
         long expirationSeconds = 7L * 24 * 3600; // 7 天
-        String token = jwtUtils.generateToken(user.getId(), user.getUserRole(), expirationSeconds);
+        // 多租户：带上用户的「当前星球」ID（未加入任何星球时为 null），
+        // 与密码登录保持同一套取值逻辑，避免两条登录路径签出的 starId 不一致
+        Long starId = userService.resolveCurrentStarId(user.getId());
+        String token = jwtUtils.generateToken(user.getId(), user.getUserRole(), starId, expirationSeconds);
 
         // 6. 组装返回数据
         Map<String, Object> result = new HashMap<>();
@@ -297,7 +369,7 @@ public class OAuthController {
             user.setUserAccount(account);
             user.setUsername(StringUtils.isNotBlank(nickname) ? nickname : "QQ用户");
             user.setAvatarUrl(avatarUrl);
-            user.setUserPassword(""); // QQ 登录用户无密码
+            user.setUserPassword(UserConstant.OAUTH_PASSWORD_PLACEHOLDER); // 第三方登录账号无可用密码
             user.setUserRole(0); // 普通用户
             user.setUserStatus(0); // 正常状态
             user.setCreateTime(new Date());
@@ -318,7 +390,10 @@ public class OAuthController {
 
         // 5. 生成 JWT token
         long expirationSeconds = 7L * 24 * 3600; // 7 天
-        String jwtToken = jwtUtils.generateToken(user.getId(), user.getUserRole(), expirationSeconds);
+        // 多租户：带上用户的「当前星球」ID（未加入任何星球时为 null），
+        // 与密码登录保持同一套取值逻辑，避免两条登录路径签出的 starId 不一致
+        Long starId = userService.resolveCurrentStarId(user.getId());
+        String jwtToken = jwtUtils.generateToken(user.getId(), user.getUserRole(), starId, expirationSeconds);
 
         // 6. 组装返回数据
         Map<String, Object> result = new HashMap<>();

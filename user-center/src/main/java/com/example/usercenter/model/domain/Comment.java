@@ -25,6 +25,14 @@ public class Comment {
     private Long noteId;
 
     /**
+     * 所属星球ID（多租户列）
+     *
+     * <p>由所属笔记的 star_id 派生：笔记属于某星球时评论也归属该星球，
+     * 笔记为全平台公开内容（star_id 为空）时该字段为空。</p>
+     */
+    private Long starId;
+
+    /**
      * 笔记标题
      */
     private String noteTitle;
