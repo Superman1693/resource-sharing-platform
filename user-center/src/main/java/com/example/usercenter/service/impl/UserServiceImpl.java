@@ -30,6 +30,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.DigestUtils;
 
 import java.util.Date;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -73,6 +74,15 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
      * 加盐值混淆密码
      */
     private static final String SALT = "yiyi";
+
+    /**
+     * 邮箱格式。
+     *
+     * <p>用途：登录时区分「账号」与「邮箱」两种登录标识——
+     * 含 {@code @} 的按邮箱校验格式，否则按账号规则「禁止特殊字符」校验。</p>
+     */
+    private static final Pattern EMAIL_PATTERN =
+            Pattern.compile("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$");
 
     @Override
     public long userRegister(UserRegisterRequest request) {
@@ -152,56 +162,104 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         return user.getId();
     }
 
+    /**
+     * 校验原始密码是否与库中口令一致，兼容 BCrypt 与历史 MD5 两种格式。
+     *
+     * <p>MD5 校验通过后会<b>就地升级为 BCrypt</b>（与改造前的行为一致）。</p>
+     *
+     * @param rawPassword 用户输入的明文密码
+     * @param user        候选用户（可能出现多条，见 userLogin 中的说明）
+     * @return 口令是否匹配；第三方登录账号的占位符口令永远不会匹配成功
+     */
+    private boolean matchesPassword(String rawPassword, User user) {
+        String stored = user.getUserPassword();
+        if (StringUtils.isBlank(stored)) {
+            return false;
+        }
+        if (stored.startsWith("$2a$")) {
+            // BCrypt 格式：直接用 matches 验证
+            return bCryptPasswordEncoder.matches(rawPassword, stored);
+        }
+        // 旧 MD5 格式：用原方式验证
+        String encryptPassword = DigestUtils.md5DigestAsHex((SALT + rawPassword).getBytes());
+        if (encryptPassword.equals(stored)) {
+            // 验证成功后自动迁移为 BCrypt 格式
+            user.setUserPassword(bCryptPasswordEncoder.encode(rawPassword));
+            userMapper.updateById(user);
+            return true;
+        }
+        return false;
+    }
+
     @Override
-    public User userLogin(String userAccount, String userPassword, HttpServletRequest request) {
+    public User userLogin(String loginId, String userPassword, HttpServletRequest request) {
         // 1.校验
-        if (StringUtils.isAnyBlank(userAccount, userPassword)) {
+        if (StringUtils.isAnyBlank(loginId, userPassword)) {
             return null; // 返回null让Controller层处理
         }
-        if (userAccount.length() < 4) {
+        // 登录标识 = 账号 或 邮箱，先去掉首尾空格。
+        // 注意：这里必须用一个**新的局部变量**承载 trim 结果，不能给入参重新赋值——
+        // 被重新赋值的变量不再是 "effectively final"，无法在下面的 lambda 中引用。
+        String loginKey = loginId.trim();
+        if (loginKey.length() < 4) {
             return null; // 返回null让Controller层处理
         }
         if (userPassword.length() < 8) {
             return null; // 返回null让Controller层处理
         }
 
-        // 账号不能包含特殊字符
-        String validPattern = "[~!@#$%^&*()_+{}:\"<>?`\\-=\\[\\]\\\\;',./ ]";
-        Matcher matcher = Pattern.compile(validPattern).matcher(userAccount);
-        if (matcher.find()) {
-            return null; // 返回null让Controller层处理
-        }
-        // 2.查询用户并验证密码（兼容 BCrypt 和旧 MD5 格式）
-        QueryWrapper<User> queryWrapper = new QueryWrapper<>();
-        queryWrapper.eq("user_account", userAccount);
-        User user = userMapper.selectOne(queryWrapper);
-        // 用户不存在
-        if (user == null) {
-            log.trace("user login failed, userAccount not found");
-            return null;
-        }
-        // 第三方登录账号没有可用密码：给出明确提示，而不是笼统的「用户名或密码错误」
-        if (UserConstant.OAUTH_PASSWORD_PLACEHOLDER.equals(user.getUserPassword())) {
-            throw new BusinessException(ErrorCode.LOGIN_FAILED, "该账号由第三方平台创建，请使用 GitHub / QQ 登录");
-        }
-        // 验证密码：判断是否为 BCrypt 格式
-        boolean passwordMatch;
-        if (user.getUserPassword().startsWith("$2a$")) {
-            // BCrypt 格式：直接用 matches 验证
-            passwordMatch = bCryptPasswordEncoder.matches(userPassword, user.getUserPassword());
+        // 2.按输入形态分流校验
+        //    含 @ → 视为邮箱，校验邮箱格式；
+        //    否则 → 视为账号，沿用「不能包含特殊字符」的规则。
+        //    注意：原来的账号规则会把 @ 和 . 判为非法字符，若不分流，邮箱将永远无法登录。
+        boolean emailLogin = loginKey.contains("@");
+        if (emailLogin) {
+            if (!EMAIL_PATTERN.matcher(loginKey).matches()) {
+                log.trace("user login failed, invalid email format: {}", loginKey);
+                return null;
+            }
         } else {
-            // 旧 MD5 格式：用原方式验证
-            String encryptPassword = DigestUtils.md5DigestAsHex((SALT + userPassword).getBytes());
-            passwordMatch = encryptPassword.equals(user.getUserPassword());
-            if (passwordMatch) {
-                // 验证成功后自动迁移为 BCrypt 格式
-                user.setUserPassword(bCryptPasswordEncoder.encode(userPassword));
-                userMapper.updateById(user);
+            String validPattern = "[~!@#$%^&*()_+{}:\"<>?`\\-=\\[\\]\\\\;',./ ]";
+            Matcher matcher = Pattern.compile(validPattern).matcher(loginKey);
+            if (matcher.find()) {
+                return null; // 返回null让Controller层处理
             }
         }
-        if (!passwordMatch) {
-            log.trace("user login failed, userAccount cannot match userPassword");
+
+        // 3.查询候选用户：账号 或 邮箱，任一命中即为候选
+        QueryWrapper<User> queryWrapper = new QueryWrapper<>();
+        queryWrapper.and(w -> w.eq("user_account", loginKey).or().eq("email", loginKey));
+        List<User> candidates = userMapper.selectList(queryWrapper);
+        if (candidates.isEmpty()) {
+            log.trace("user login failed, no user matches loginId: {}", loginKey);
             return null;
+        }
+
+        // 4.以「密码匹配」为唯一判定依据，从候选中确定真正的用户。
+        //   为什么不要求唯一命中：email 列没有唯一索引，历史数据里存在多个账号共用同一邮箱
+        //   （例如自主注册的账号与 GitHub 自动建号共用一个邮箱）。用密码匹配既能避免
+        //   selectOne 命中多条时抛 TooManyResultsException，也保证不会「猜」到别人的账号
+        //   ——密码对不上就不放行。单账号场景下与改造前完全等价。
+        User user = null;
+        for (User candidate : candidates) {
+            if (matchesPassword(userPassword, candidate)) {
+                user = candidate;
+                break;
+            }
+        }
+        if (user == null) {
+            // 第三方登录账号没有可用密码：给出明确提示，而不是笼统的「账号/邮箱或密码错误」
+            if (candidates.size() == 1
+                    && UserConstant.OAUTH_PASSWORD_PLACEHOLDER.equals(candidates.get(0).getUserPassword())) {
+                throw new BusinessException(ErrorCode.LOGIN_FAILED, "该账号由第三方平台创建，请使用 GitHub 登录");
+            }
+            log.trace("user login failed, password not match for loginId: {}", loginKey);
+            return null;
+        }
+        if (candidates.size() > 1) {
+            log.info("登录标识 {} 命中 {} 个账号，已按密码匹配选中 id={}；"
+                            + "建议为 user.email 建唯一索引并清理重复邮箱，以消除歧义",
+                    loginKey, candidates.size(), user.getId());
         }
         // 检查用户封禁状态
         if (Integer.valueOf(1).equals(user.getUserStatus())) {

@@ -175,6 +175,28 @@ README.md（项目入口 / 功能清单）
 | **验证结果** | Flyway：`Current version: 1` → `Migrating to version "2 - multi tenant scope and error log"` → `now at version v2`；应用 `Started UserCenterApplication in 23.157 seconds`，`Tomcat started on port 8080`，**无 ERROR**；`GET /api/note/list`、`/api/user/current`、`/api/star/list` 均返回 200；库结构 25 → 27 张表（含 `error_log` 与 `flyway_schema_history`），`comment.star_id` 回填 3 条、2 个第三方账号写入密码占位符 |
 | **备份位置** | `.workbuddy/backup/mysql-migration-20260921/yiya-from-3306.sql`（3306 的完整导出，可随时回滚） |
 
+**第六轮（修复线上登录/注册 403：CORS 白名单漏了顶级域）**
+
+> 现象：云服务器上登录/注册返回 `403 Forbidden`，响应体 `Invalid CORS request`，而本地完全正常。
+
+| 项 | 内容 |
+|------|------|
+| **根因** | `SecurityConfig` 的 CORS 白名单被**硬编码**为 `localhost:5173 / localhost:5174 / https://www.e-ren.icu`，而线上实际访问的是**顶级域** `https://e-ren.icu`。顶级域与 www 是两个不同的来源 → 未登记 → 403 |
+| **为什么同源也会触发** | 前端用相对路径 `/api`（无 `.env` 覆盖 `VITE_API_BASE_URL`），线上页面与接口同源。但浏览器对 `POST + application/json` 这类**非简单请求**，即使同源也会发送 `Origin` 头；Spring 见到 `Origin` 即校验白名单。**「同源不用配 CORS」是错误直觉** |
+| **为什么本地正常** | 本地走 Vite dev server 代理（`/api` → `localhost:8080`），`Origin` 是 `http://localhost:5173`，恰好白名单里有 |
+| **修复** | ①白名单从硬编码改为配置项 `center.cors.allowed-origins`（`application.yml`，逗号分隔），新增 `https://e-ren.icu`、`http://127.0.0.1:5173`；②`SecurityConfig` 新增 `@PostConstruct` 打印生效白名单；③自动纠正末尾多余 `/` 并告警；④允许的方法补 `PATCH` |
+| **对照实测** | 修复前实例：`Origin: https://e-ren.icu` → **403 Invalid CORS request**；同一实例换 `https://www.e-ren.icu` → 200。修复后实例：`https://e-ren.icu` / `www` / `localhost:5173` / `127.0.0.1:5173` 全部 **200**，而 `https://evil.example.com` 仍 **403**（白名单未被放开）；注册接口 200；`OPTIONS` 预检返回 `Access-Control-Allow-Origin: https://e-ren.icu` |
+
+**第七轮（隐藏 QQ 登录入口 + 新增邮箱登录）**
+
+| 项 | 内容 |
+|------|------|
+| **需求 1：隐藏 QQ 登录按钮** | 按用户澄清「只隐藏按钮，不要删代码」，实现为开关式：`Login.vue` 新增 `const SHOW_QQ_LOGIN = false`，QQ 按钮加 `v-if="SHOW_QQ_LOGIN"`（含样式），**其余 QQ 代码全部保留**（`oauth.js` 的 `redirectToQQ`、`api.js` 的 `qqLogin`、`OAuthCallback.vue` 的 QQ 分支、后端 `/oauth/qq/**`）。改回 `true` 即恢复 |
+| **需求 2：手机号登录 → 邮箱登录** | 登录页第 2 个页签由「手机号登录（即将开放）」占位替换为**可用的「邮箱登录」**表单（邮箱格式校验 + 密码 + 记住我）；后端 `userLogin` 支持「用户名或邮箱」登录 |
+| **后端实现要点** | ①按「是否含 `@`」分流校验（原账号规则会把 `@`/`.` 判为非法，不分流则邮箱永远登不进）；②查询条件 `WHERE (user_account = ? OR email = ?)`；③**用「密码匹配」而非「唯一命中」确定用户**——`user.email` 无唯一索引且存在多账号共用邮箱的历史数据，`selectOne` 会抛 `TooManyResultsException`，取第一条又会误登他人账号；④抽出 `matchesPassword()` 复用 BCrypt/MD5 兼容与自动升级逻辑 |
+| **关键坑** | 给入参 `loginId` 重新赋值后再在 lambda 中使用 → 编译报「从 lambda 表达式引用的本地变量必须是最终变量」。改用新局部变量 `loginKey` 承载 `trim()` 结果 |
+| **实测（2026-09-21）** | 邮箱登录 ✅ / 用户名登录无回归 ✅ / 未注册邮箱返回统一错误（不泄露账号是否存在）✅ / 重复邮箱 + 错误密码返回业务错误而非 500 ✅ / 非法账号与非法邮箱格式均被拦下 ✅；**两账号共用同一邮箱、密码不同 → 各自密码分别登进正确账号（id15 / id16）** ✅；前端 `vite build` EXIT=0，后端 `./mvnw compile` EXIT=0；测试账号已清理（用户数回到 14） |
+
 ---
 
 ## 四、维护约定

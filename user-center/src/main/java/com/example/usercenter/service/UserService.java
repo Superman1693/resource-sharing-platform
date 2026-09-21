@@ -34,7 +34,16 @@ public interface UserService extends IService<User> {
     脱敏后的用户信息
      */
 
-    User userLogin(String userAccount, String userPassword, HttpServletRequest request);
+    /**
+     * 登录。
+     *
+     * @param loginId      登录标识，<b>可以是用户名，也可以是邮箱</b>；
+     *                     含 {@code @} 时按邮箱处理，否则按用户名处理
+     * @param userPassword 明文密码（内部按 BCrypt / 历史 MD5 两种格式校验）
+     * @param request      用于记录登录 IP 等
+     * @return 脱敏后的用户；账号不存在或密码不匹配时返回 null
+     */
+    User userLogin(String loginId, String userPassword, HttpServletRequest request);
 
     /**
      * 解析用户的「当前星球」ID，用于签发 JWT 的 starId claim。

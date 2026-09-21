@@ -88,10 +88,10 @@ public class UserController extends BaseController {
 
         // 2. 基础参数校验
         if (StringUtils.isAnyBlank(userAccount, userPassword)) {
-            return ResultUtils.error(ErrorCode.PARAMS_ERROR, "用户名或密码不能为空");
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR, "账号/邮箱与密码不能为空");
         }
         if (userAccount.length() < 4) {
-            return ResultUtils.error(ErrorCode.PARAMS_ERROR, "用户名长度不能少于4位");
+            return ResultUtils.error(ErrorCode.PARAMS_ERROR, "账号或邮箱长度不能少于4位");
         }
         if (userPassword.length() < 8) {
             return ResultUtils.error(ErrorCode.PARAMS_ERROR, "密码长度不能少于8位");
@@ -103,7 +103,7 @@ public class UserController extends BaseController {
         // 4. 处理 Service 层的返回结果
         if (user == null) {
             // 登录失败，返回错误的 BaseResponse 对象
-            return ResultUtils.error(ErrorCode.LOGIN_FAILED, "用户名或密码错误");
+            return ResultUtils.error(ErrorCode.LOGIN_FAILED, "账号/邮箱或密码错误");
         }
 
         // 5. 生成 JWT token（记住我：30天；普通：取配置 spring.jwt.expiration）

@@ -4,7 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '../store/userLogin'
 import logoUrl from '../assets/images/logo.png'
 import { Layout, message } from 'ant-design-vue'
-import { UserOutlined, LockOutlined, GithubOutlined } from '@ant-design/icons-vue'
+import { UserOutlined, LockOutlined, MailOutlined, GithubOutlined } from '@ant-design/icons-vue'
 import Fireworks from '../components/Fireworks.vue'
 import { redirectToGithub, redirectToQQ } from '../utils/oauth'
 
@@ -13,6 +13,16 @@ const router = useRouter()
 const route = useRoute()
 const loginFormRef = ref(null)
 const showFireworks = ref(false)
+
+/**
+ * QQ 登录入口开关。
+ *
+ * 需求：登录页暂时不显示 QQ 登录按钮，但**相关代码全部保留**——
+ * `utils/oauth.js` 的 redirectToQQ、`utils/api.js` 的 qqLogin、
+ * `OAuthCallback.vue` 的 QQ 分支、以及后端 `/oauth/qq/**` 接口均未改动。
+ * 需要恢复时，把这里改成 true 即可（按钮与样式会立刻回来）。
+ */
+const SHOW_QQ_LOGIN = false
 
 const bannedMsg = route.query.msg === 'banned' ? '您的账号已被封禁，请联系管理员' : ''
 
@@ -23,20 +33,50 @@ const formState = reactive({
   remember: true,
 })
 
+// 邮箱登录表单：与账号登录走同一个登录接口，后端按「是否含 @」识别为邮箱
+const emailFormRef = ref(null)
+const emailFormState = reactive({
+  email: '',
+  emailPassword: '',
+  remember: true,
+})
+
 watch(
   () => route.path,
   (newPath) => {
     if (newPath === '/login') {
       formState.userAccount = ''
       formState.userPassword = ''
+      emailFormState.email = ''
+      emailFormState.emailPassword = ''
       if (loginFormRef.value) {
         loginFormRef.value.resetFields()
+      }
+      if (emailFormRef.value) {
+        emailFormRef.value.resetFields()
       }
     }
   },
   { immediate: true }
 )
 
+/** 登录成功后的统一处理：放烟花 + 按角色跳转 */
+const handleLoginSuccess = () => {
+  showFireworks.value = true
+  const userRole = Number(store.userRole)
+  const defaultPath = userRole === 1 ? '/main/contentManage' : '/user/home'
+  const redirectPath = route.query.redirect
+  const targetPath = redirectPath && redirectPath !== '/login' ? String(redirectPath) : defaultPath
+
+  setTimeout(() => {
+    router.replace(targetPath).catch(err => {
+      console.error('导航失败:', err)
+      router.push(targetPath).catch(e => console.error('重试导航失败:', e))
+    })
+  }, 100)
+}
+
+/** 账号密码登录 */
 const sendMsg = async () => {
   if (!loginFormRef.value) {
     message.error('表单加载失败，请刷新页面')
@@ -48,18 +88,32 @@ const sendMsg = async () => {
     const loginSuccess = await store.login(formState.userAccount, formState.userPassword, formState.remember)
 
     if (loginSuccess) {
-      showFireworks.value = true
-      const userRole = Number(store.userRole)
-      const defaultPath = userRole === 1 ? '/main/contentManage' : '/user/home'
-      const redirectPath = route.query.redirect
-      const targetPath = redirectPath && redirectPath !== '/login' ? String(redirectPath) : defaultPath
+      handleLoginSuccess()
+    }
+  } catch (err) {
+    if (err.errorFields) {
+      message.warning('请完善登录信息')
+    }
+  }
+}
 
-      setTimeout(() => {
-        router.replace(targetPath).catch(err => {
-          console.error('导航失败:', err)
-          router.push(targetPath).catch(e => console.error('重试导航失败:', e))
-        })
-      }, 100)
+/** 邮箱登录（后端支持用邮箱 + 密码登录） */
+const sendEmailMsg = async () => {
+  if (!emailFormRef.value) {
+    message.error('表单加载失败，请刷新页面')
+    return
+  }
+
+  try {
+    await emailFormRef.value.validate()
+    const loginSuccess = await store.login(
+      emailFormState.email.trim(),
+      emailFormState.emailPassword,
+      emailFormState.remember
+    )
+
+    if (loginSuccess) {
+      handleLoginSuccess()
     }
   } catch (err) {
     if (err.errorFields) {
@@ -76,6 +130,10 @@ const { Footer } = Layout
 
 const disabled = computed(() => {
   return !(formState.userAccount && formState.userPassword)
+})
+
+const emailDisabled = computed(() => {
+  return !(emailFormState.email && emailFormState.emailPassword)
 })
 </script>
 
@@ -190,7 +248,13 @@ const disabled = computed(() => {
                 <button class="social-btn github-btn" @click="redirectToGithub" title="GitHub 登录">
                   <GithubOutlined />
                 </button>
-                <button class="social-btn qq-btn" @click="redirectToQQ" title="QQ 登录">
+                <!-- QQ 登录按钮：暂时隐藏（SHOW_QQ_LOGIN = false），代码与样式均保留，改开关即可恢复 -->
+                <button
+                  v-if="SHOW_QQ_LOGIN"
+                  class="social-btn qq-btn"
+                  @click="redirectToQQ"
+                  title="QQ 登录"
+                >
                   <svg class="qq-icon" viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
                     <path d="M12.003 2c-2.265 0-6.29 1.364-6.29 7.325v1.195S3.55 14.96 3.55 17.474c0 .665.17 1.025.281 1.025.114 0 .902-.484 1.748-2.072 0 0-.18 2.197 1.904 3.967 0 0-1.77.495-1.77 1.182 0 .686 4.078.43 6.29.43 2.239 0 6.29.256 6.29-.43 0-.687-1.77-1.182-1.77-1.182 2.085-1.77 1.905-3.967 1.905-3.967.845 1.588 1.634 2.072 1.746 2.072.111 0 .283-.36.283-1.025 0-2.514-2.166-6.954-2.166-6.954V9.325C18.29 3.364 14.268 2 12.003 2z"/>
                   </svg>
@@ -200,11 +264,75 @@ const disabled = computed(() => {
           </a-form>
         </a-tab-pane>
 
-        <a-tab-pane key="2" tab="手机号登录">
-          <div class="coming-soon">
-            <div class="coming-soon-icon">📱</div>
-            <p>手机号登录即将开放</p>
-          </div>
+        <a-tab-pane key="2" tab="邮箱登录">
+          <a-form
+            :model="emailFormState"
+            name="email_login_form"
+            class="login-form"
+            ref="emailFormRef"
+          >
+            <a-form-item
+              name="email"
+              :rules="[
+                { required: true, message: '请输入邮箱' },
+                { type: 'email', message: '请输入正确的邮箱格式' }
+              ]"
+            >
+              <a-input
+                v-model:value="emailFormState.email"
+                size="large"
+                placeholder="请输入邮箱"
+                class="login-input"
+                autocomplete="email"
+              >
+                <template #prefix>
+                  <MailOutlined class="input-icon" />
+                </template>
+              </a-input>
+            </a-form-item>
+
+            <a-form-item
+              name="emailPassword"
+              :rules="[{ required: true, message: '请输入密码' }]"
+            >
+              <a-input-password
+                v-model:value="emailFormState.emailPassword"
+                size="large"
+                placeholder="请输入密码"
+                class="login-input"
+                autocomplete="current-password"
+              >
+                <template #prefix>
+                  <LockOutlined class="input-icon" />
+                </template>
+              </a-input-password>
+            </a-form-item>
+
+            <a-form-item class="remember-row">
+              <a-checkbox v-model:checked="emailFormState.remember" class="remember-checkbox">
+                记住我
+              </a-checkbox>
+              <a class="forgot-link" @click.prevent="router.push('/resetPassword')">忘记密码</a>
+            </a-form-item>
+
+            <a-form-item>
+              <a-button
+                :disabled="emailDisabled"
+                type="primary"
+                html-type="submit"
+                class="login-btn"
+                size="large"
+                @click.prevent="sendEmailMsg"
+              >
+                登录
+              </a-button>
+            </a-form-item>
+
+            <div class="register-section">
+              <span class="register-text">还没有账号？</span>
+              <a class="register-link" @click.prevent="goToRegister">立即注册</a>
+            </div>
+          </a-form>
         </a-tab-pane>
       </a-tabs>
     </div>
@@ -510,22 +638,6 @@ const disabled = computed(() => {
   color: var(--color-accent-light);
 }
 
-/* 手机号登录占位 */
-.coming-soon {
-  text-align: center;
-  padding: 60px 0;
-  color: var(--color-text-muted);
-}
-
-.coming-soon-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
-}
-
-.coming-soon p {
-  font-size: 0.9375rem;
-}
-
 /* 底部 */
 .login-footer {
   position: absolute;
@@ -626,6 +738,7 @@ const disabled = computed(() => {
   color: #333;
 }
 
+/* QQ 按钮样式：按钮当前被 SHOW_QQ_LOGIN 隐藏，样式一并保留 */
 .qq-btn:hover {
   border-color: #12b7f5;
   color: #12b7f5;

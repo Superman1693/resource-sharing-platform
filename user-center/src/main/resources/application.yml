@@ -95,3 +95,16 @@ rate-limit:
 # 存在时优先于内置 classpath:sensitive-words.txt，相对路径基于工作目录）
 sensitive:
   words-file: sensitive-words.txt
+
+# 跨域（CORS）允许的前端来源，供 SecurityConfig 读取。
+#
+# ⚠️ 这是线上「登录/注册 403，响应体 Invalid CORS request」的唯一开关，务必理解：
+#   1. 前端生产环境与 API 虽同源（页面 https://e-ren.icu、接口 https://e-ren.icu/api），
+#      但浏览器对 POST + application/json 这类「非简单请求」即使同源也会带 Origin 头，
+#      Spring 见到 Origin 就会核对白名单，未登记 → 403 Invalid CORS request。
+#   2. 顶级域与 www 是两个不同的来源，必须分别列出；端口不同（5173/5174）同理。
+#   3. 不要写成 "https://e-ren.icu/"（末尾带斜杠），Origin 头不含路径，会永远匹配不上。
+#   4. 配置为逗号分隔字符串；可被 application-{profile}.yml 覆盖。
+center:
+  cors:
+    allowed-origins: http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,https://e-ren.icu,https://www.e-ren.icu

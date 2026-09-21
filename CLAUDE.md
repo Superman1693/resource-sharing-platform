@@ -125,7 +125,7 @@ cd user-center
 | `MybatisPlusConfig` | 分页插件 + 多租户插件 |
 | `RedisConfig` | RedisTemplate 序列化配置 |
 | `RedissonConfig` | Redisson 客户端（单机模式）|
-| `SecurityConfig` | Spring Security（禁用 CSRF/Session，CORS 配置）|
+| `SecurityConfig` | Spring Security（禁用 CSRF/Session）+ **CORS 来源白名单**，读 `center.cors.allowed-origins` |
 | `WebMvcConfig` | 拦截器注册（Auth + RateLimit）|
 | `WebSocketConfig` | STOMP 消息代理 + SockJS 端点 |
 | `BloomFilterConfig` | Redisson 布隆过滤器（启动时加载笔记 ID）|
@@ -167,5 +167,21 @@ cd user-center
 - `User.userPassword` 标注 `@JsonProperty(access = WRITE_ONLY)`，仅接受写入不序列化输出
 - `LoginUserDTO` 含 `starId` 字段，`AuthInterceptor` 从 JWT claims 读取；签发端 `JwtUtils.generateToken(userId, userRole, starId, expirationSeconds)` 已写入该 claim（`starId` 为 null 时不写，避免序列化出空 claim）
 - 第三方登录回调地址由后端配置决定：`github.oauth.redirect-uri` 在 dev 下为 `http://localhost:5173/oauth/callback`，因此 **`demo1/vite.config.js` 已固定 `port: 5173` + `strictPort: true`**，改端口时两处必须同改
+- **登录标识可以是用户名或邮箱**：`POST /api/user/login` 的 `userAccount` 字段按「是否含 `@`」自动分流，
+  邮箱走邮箱格式校验、其余走「禁止特殊字符」的账号规则。实现上查询条件为
+  `WHERE (user_account = ? OR email = ?)`，再用**密码匹配**从候选中确定用户——
+  因为 `user.email` 没有唯一索引，存在多账号共用同一邮箱的历史数据，不能依赖唯一命中。
+- **QQ 登录入口当前隐藏**：`demo1/src/views/Login.vue` 的 `SHOW_QQ_LOGIN = false` 控制按钮是否渲染。
+  `utils/oauth.js` 的 `redirectToQQ`、`utils/api.js` 的 `qqLogin`、`OAuthCallback.vue` 的 QQ 分支
+  以及后端 `/oauth/qq/**` 接口**全部保留未动**，改回 `true` 即可恢复入口。
 - 前端 `userLogin` store 使用 `pinia-plugin-persistedstate` 自动持久化，不再手动操作 localStorage
 - 前端错误通过 `errorTracker.js` 批量上报到后端 `/api/error/report`，使用 `sendBeacon` 优先
+- **CORS 白名单**：配置项 `center.cors.allowed-origins`（`application.yml`，逗号分隔），由 `SecurityConfig` 读取。
+  三个易踩的坑：
+  1. **同源请求也会带 `Origin`**——浏览器对 `POST + application/json` 这类非简单请求，即使前后端同源也会发送
+     `Origin` 头；Spring 一旦看到 `Origin` 就会校验白名单，未登记直接返回 `403 Invalid CORS request`。
+     所以「同源不需要配 CORS」是**错误**的直觉。
+  2. **顶级域与 www 是两个来源**：`https://e-ren.icu` 与 `https://www.e-ren.icu` 必须分别列出。
+  3. **不能带末尾斜杠**：Origin 头不含路径，写成 `https://e-ren.icu/` 永远匹配不上（`SecurityConfig` 会自动纠正并告警）。
+  启动日志会打印生效白名单：`[CORS] 允许的前端来源：[...]`；线上出现 403 且响应体是 `Invalid CORS request` 时，
+  第一时间对照这行日志与浏览器实际 Origin。
