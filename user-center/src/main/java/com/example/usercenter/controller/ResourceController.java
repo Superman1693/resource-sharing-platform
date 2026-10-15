@@ -61,6 +61,24 @@ public class ResourceController extends BaseController {
     }
 
     /**
+     * 获取资源列表（管理端，需管理员）
+     * <p>与公开接口 {@code GET /resource/list} 的差别：未指定 status 时返回**全部状态**，
+     * 否则待审核（pending）的资源在管理端也不可见，审核入口将形同虚设。
+     */
+    @GetMapping("/manage/list")
+    @AdminRequired
+    public BaseResponse<List<Resource>> getResourceListForAdmin(
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String tag,
+            @RequestParam(required = false) String category,
+            @RequestParam(required = false) Long userId,
+            @RequestParam(required = false) String status) {
+        requireAdmin();
+        List<Resource> resources = resourceService.getResourceListForAdmin(keyword, tag, category, userId, status);
+        return ResultUtils.success(resources);
+    }
+
+    /**
      * 获取当前用户上传的资源（分页，"我的资源"专属页）
      */
     @GetMapping("/my")

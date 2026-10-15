@@ -98,6 +98,14 @@ const loadResources = async () => {
   }
 }
 
+// 资源审核状态文案：上传后默认为 pending，需管理员在「资源管理」审核通过才会公开
+const resourceStatusText = (status) => {
+  if (status === 'pending') return '待审核'
+  if (status === 'enabled') return '已上架'
+  if (status === 'disabled') return '未通过'
+  return ''
+}
+
 // 我的评论（含回复）
 const loadComments = async () => {
   try {
@@ -269,6 +277,11 @@ const goResource = (id) => {
                 <div class="item-main">
                   <span class="item-title">{{ res.title }}</span>
                   <span class="item-meta">
+                    <span
+                      v-if="resourceStatusText(res.status)"
+                      class="item-tag"
+                      :class="`item-tag--${res.status}`"
+                    >{{ resourceStatusText(res.status) }}</span>
                     <span v-if="res.resourceType" class="item-tag">{{ res.resourceType }}</span>
                     <span v-if="res.category" class="item-tag">{{ res.category }}</span>
                     <span>下载 {{ res.downloadCount || 0 }}</span>
@@ -565,6 +578,22 @@ const goResource = (id) => {
   color: var(--color-accent, #6366f1);
   font-size: 0.75rem;
   font-weight: 500;
+}
+
+/* 资源审核状态标签：待审核 / 已上架 / 未通过 */
+.item-tag--pending {
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+}
+
+.item-tag--enabled {
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+}
+
+.item-tag--disabled {
+  background: rgba(148, 163, 184, 0.16);
+  color: #64748b;
 }
 
 .item-note {

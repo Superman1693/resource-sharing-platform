@@ -122,9 +122,13 @@ export const likeComment = (id) =>
 
 // ========== 资源管理 API ==========
 
-// 21) 获取资源列表
+// 21) 获取资源列表（公开视角：默认只返回已上架 enabled 的资源）
 export const getResourceList = (params) =>
   request.get('/resource/list', { params })
+
+// 21.0) 获取资源列表（管理端视角：不传 status 时返回全部状态，含待审核 pending）
+export const getResourceListForAdmin = (params) =>
+  request.get('/resource/manage/list', { params })
 
 // 16.1) 举报评论
 export const reportComment = (body) =>

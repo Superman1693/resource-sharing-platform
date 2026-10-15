@@ -5,7 +5,7 @@ import { message as antMessage, Modal } from 'ant-design-vue'
 // ✅ 修复：保留需要的图标，确保按需导入
 import { DownloadOutlined } from '@ant-design/icons-vue'
 // ✅ 新增：补充下载接口（需在api文件中定义）
-import { getResourceList, deleteResource, toggleResourceStatus, reviewResource } from '../../utils/api'
+import { getResourceListForAdmin, deleteResource, toggleResourceStatus, reviewResource } from '../../utils/api'
 import { formatLocalDateTime } from '../../utils/dateUtils'
 
 const loading = ref(false)
@@ -25,7 +25,10 @@ const tagOptions = [
   { label: '其他', value: 'other' },
 ]
 
+// 状态筛选：留空 = 全部。管理端接口不传 status 时返回全部状态（含待审核），
+// 公开接口则只会返回 enabled——这正是「上传后列表看不到」的原因，故此处必须走管理端接口。
 const statusOptions = [
+  { label: '全部', value: '' },
   { label: '待审核', value: 'pending' },
   { label: '启用', value: 'enabled' },
   { label: '停用', value: 'disabled' },
@@ -63,10 +66,10 @@ const fetchResourceList = async () => {
   try {
     const params = {
       keyword: filterForm.keyword || undefined,
-      tag: filterForm.tag,
-      status: filterForm.status,
+      tag: filterForm.tag || undefined,
+      status: filterForm.status || undefined,
     }
-    const res = await getResourceList(params)
+    const res = await getResourceListForAdmin(params)
     const data = res.data || []
     resourceList.value = Array.isArray(data) ? data : []
   } catch (err) {

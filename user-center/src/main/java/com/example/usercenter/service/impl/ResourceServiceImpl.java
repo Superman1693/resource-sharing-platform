@@ -52,6 +52,23 @@ public class ResourceServiceImpl extends ServiceImpl<ResourceMapper, Resource> i
 
     @Override
     public List<Resource> getResourceList(String keyword, String tag, String category, Long userId, String status) {
+        return queryResources(keyword, tag, category, userId, status, false);
+    }
+
+    @Override
+    public List<Resource> getResourceListForAdmin(String keyword, String tag, String category, Long userId, String status) {
+        return queryResources(keyword, tag, category, userId, status, true);
+    }
+
+    /**
+     * 资源列表公共查询。
+     *
+     * @param adminView true = 管理端视角：未指定 status 时返回**全部状态**（含 pending / disabled），
+     *                  否则待审核的资源在管理端也不可见，审核入口形同虚设；
+     *                  false = 公开视角：未指定 status 时只返回 enabled，待审核内容不对外暴露。
+     */
+    private List<Resource> queryResources(String keyword, String tag, String category,
+                                          Long userId, String status, boolean adminView) {
         QueryWrapper<Resource> queryWrapper = new QueryWrapper<>();
 
         if (StringUtils.isNotBlank(keyword)) {
@@ -69,8 +86,8 @@ public class ResourceServiceImpl extends ServiceImpl<ResourceMapper, Resource> i
         }
         if (StringUtils.isNotBlank(status)) {
             queryWrapper.eq("status", status);
-        } else {
-            queryWrapper.eq("status", "enabled"); // 默认只查询启用的
+        } else if (!adminView) {
+            queryWrapper.eq("status", "enabled"); // 公开列表默认只查询启用的
         }
 
         queryWrapper.orderByDesc("create_time");

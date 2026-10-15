@@ -13,9 +13,18 @@ import java.util.List;
  */
 public interface ResourceService extends IService<Resource> {
     /**
-     * 获取资源列表
+     * 获取资源列表（公开视角）。
+     * <p>未指定 status 时**只返回 status = enabled 的资源**——待审核（pending）与已停用（disabled）的
+     * 资源不会出现在公开列表中，这是有意的：上传后需管理员审核通过才对外可见。
      */
     List<Resource> getResourceList(String keyword, String tag, String category, Long userId, String status);
+
+    /**
+     * 获取资源列表（管理端视角，需管理员权限）。
+     * <p>与 {@link #getResourceList} 的唯一差别：**未指定 status 时返回全部状态**，
+     * 这样管理端才能看到待审核（pending）的资源并执行审核，否则资源会卡在 pending 无人可见。
+     */
+    List<Resource> getResourceListForAdmin(String keyword, String tag, String category, Long userId, String status);
 
     /**
      * 获取资源详情

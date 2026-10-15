@@ -62,8 +62,13 @@ const handleSubmit = async () => {
 
     const res = await addResource(resourceData)
     if (res.code === 0) {
-      antMessage.success('添加成功！')
-      router.push('/user/resources')
+      // 资源默认进入待审核（后端 status=pending），不会立刻出现在公开资源列表，
+      // 因此明确告知用户，并引导到「我的资源」查看审核状态
+      antMessage.success({
+        content: '提交成功！资源已进入待审核队列，审核通过后将在资源列表展示',
+        duration: 4,
+      })
+      router.push('/user/myContent?tab=resources')
     } else {
       antMessage.error(res.message || '添加失败')
     }
