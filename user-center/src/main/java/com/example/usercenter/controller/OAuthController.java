@@ -278,12 +278,14 @@ public class OAuthController {
     @Operation(summary = "获取 QQ 授权地址")
     public BaseResponse<Map<String, String>> getQQAuthUrl() {
         String encodedRedirectUri = URLEncoder.encode(qqRedirectUri, StandardCharsets.UTF_8);
+        // 【修复】原先这里硬编码 state=qq_login，既无 CSRF 防护、又会让前端无法附加随机 state
+        // （URL 中出现两个 state 参数）。现改由前端 utils/oauth.js 生成随机 state 并追加，
+        // 回调页统一校验；provider 由 sessionStorage 中保存的 state 反查。
         String url = "https://graph.qq.com/oauth2.0/authorize"
                 + "?response_type=code"
                 + "&client_id=" + qqAppId
                 + "&redirect_uri=" + encodedRedirectUri
-                + "&scope=get_user_info"
-                + "&state=qq_login";
+                + "&scope=get_user_info";
         Map<String, String> result = new HashMap<>();
         result.put("url", url);
         return ResultUtils.success(result);

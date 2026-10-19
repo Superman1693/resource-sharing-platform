@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { message as antMessage } from 'ant-design-vue'
+import { message as antMessage, Modal } from 'ant-design-vue'
 import { ArrowLeftOutlined, DownloadOutlined, FileOutlined, FireOutlined, VideoCameraOutlined, CodeOutlined, FilePdfOutlined } from '@ant-design/icons-vue'
 import { renderMarkdown } from '../../utils/markdown'
 import { getResourceDetail, getResourceList, getResourceContent } from '../../utils/api'
@@ -123,7 +123,21 @@ const handleDownload = () => {
     antMessage.warning('该资源暂无下载链接')
     return
   }
-  window.open(`/api/resource/download/${resource.value.id}`, '_blank')
+  const price = Number(resource.value.price) || 0
+  if (price <= 0) {
+    window.open(`/api/resource/download/${resource.value.id}`, '_blank')
+    return
+  }
+  // 付费资源：先确认再下载。后端按 (user, resource) 去重，已解锁过的用户不会重复扣分
+  Modal.confirm({
+    title: '确认下载',
+    content: `该资源需消耗 ${price} 积分（已解锁过的用户不会重复扣分；未登录请先登录）。是否继续？`,
+    okText: '确认下载',
+    cancelText: '再想想',
+    onOk: () => {
+      window.open(`/api/resource/download/${resource.value.id}`, '_blank')
+    },
+  })
 }
 
 const handleOpenRelated = (item) => {
@@ -201,6 +215,8 @@ onMounted(async () => {
             <div class="stats-row">
               <span>文件大小：{{ resource.fileSize || '--' }}</span>
               <span>下载次数：{{ resource.downloadCount || 0 }}</span>
+              <a-tag v-if="Number(resource.price) > 0" color="orange">需 {{ resource.price }} 积分</a-tag>
+              <a-tag v-else color="green">免费</a-tag>
               <span>更新时间：{{ resource.updateTime || '--' }}</span>
             </div>
             <div class="action-row">

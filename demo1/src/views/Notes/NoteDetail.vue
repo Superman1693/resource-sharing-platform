@@ -2,12 +2,12 @@
 import { ref, reactive, onMounted, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message as antMessage, Modal } from 'ant-design-vue'
-import { EyeOutlined, LikeOutlined, MessageOutlined, UserOutlined, LockOutlined, TeamOutlined, RightOutlined, EditOutlined, UnorderedListOutlined, OrderedListOutlined, CodeOutlined, ClearOutlined, UndoOutlined, RedoOutlined, LinkOutlined, PictureOutlined, FontColorsOutlined, HighlightOutlined, StarOutlined, StarFilled } from '@ant-design/icons-vue'
+import { EyeOutlined, LikeOutlined, MessageOutlined, UserOutlined, LockOutlined, TeamOutlined, RightOutlined, EditOutlined, UnorderedListOutlined, OrderedListOutlined, CodeOutlined, ClearOutlined, UndoOutlined, RedoOutlined, LinkOutlined, PictureOutlined, FontColorsOutlined, HighlightOutlined, StarOutlined, StarFilled, GiftOutlined, VerticalAlignTopOutlined } from '@ant-design/icons-vue'
 import LikeButton from '../../components/LikeButton.vue'
 import FollowButton from '../../components/FollowButton.vue'
 import UserAvatar from '../../components/UserAvatar.vue'
 import { useUserStore } from '../../store/userLogin'
-import { getNoteDetail, addComment, replyComment, likeNote, likeComment, getCommentList, reportComment, reportNote, getNoteList, updateNote, toggleCollectNote, checkCollected, searchPublicUsers, getColumnDetail } from '../../utils/api'
+import { getNoteDetail, addComment, replyComment, likeNote, likeComment, getCommentList, reportComment, reportNote, getNoteList, updateNote, toggleCollectNote, checkCollected, searchPublicUsers, getColumnDetail, unlockNote, tipNote, boostNote } from '../../utils/api'
 import { CATEGORY_TEXT } from '../../utils/constant'
 import { formatDateTime } from '../../utils/dateUtils'
 
@@ -340,6 +340,107 @@ const handleNoteLike = async () => {
 }
 
 // 收藏/取消收藏（toggle）
+// ==================== 积分消费：解锁付费笔记 / 打赏作者 ====================
+const unlocking = ref(false)
+const tipping = ref(false)
+
+/** 解锁付费笔记（消耗积分不可逆，需二次确认） */
+const handleUnlockNote = async () => {
+  if (!userStore.isLogin) {
+    antMessage.warning('请先登录后再解锁')
+    router.push('/login')
+    return
+  }
+  const price = Number(noteDetail.value.price) || 0
+  if (price <= 0) return
+  try {
+    await new Promise((resolve, reject) => {
+      Modal.confirm({
+        title: '确认解锁',
+        content: `将消耗 ${price} 积分解锁本笔记，解锁后可永久阅读。是否继续？`,
+        okText: '确认解锁',
+        cancelText: '再想想',
+        onOk: () => resolve(),
+        onCancel: () => reject(new Error('__cancel__')),
+      })
+    })
+  } catch (e) {
+    return // 用户取消
+  }
+  unlocking.value = true
+  try {
+    const res = await unlockNote(Number(noteDetail.value.id))
+    if (res.code === 0) {
+      antMessage.success('解锁成功，正在加载全文…')
+      await fetchNoteDetail()
+    }
+  } catch (e) {
+    antMessage.error(e?.description || e?.message || '解锁失败')
+  } finally {
+    unlocking.value = false
+  }
+}
+
+/** 打赏作者（amount 由预设档位传入） */
+const handleTipNote = (amount) => {
+  if (!userStore.isLogin) {
+    antMessage.warning('请先登录后再打赏')
+    router.push('/login')
+    return
+  }
+  if (noteDetail.value.authorId === userStore.id) {
+    antMessage.warning('不能打赏自己的笔记')
+    return
+  }
+  Modal.confirm({
+    title: '确认打赏',
+    content: `将向作者打赏 ${amount} 积分，是否继续？`,
+    okText: '确认打赏',
+    cancelText: '再想想',
+    onOk: async () => {
+      tipping.value = true
+      try {
+        const res = await tipNote(Number(noteDetail.value.id), amount)
+        if (res.code === 0) {
+          antMessage.success(`已打赏 ${amount} 积分，感谢支持！`)
+        }
+      } catch (e) {
+        antMessage.error(e?.description || e?.message || '打赏失败')
+      } finally {
+        tipping.value = false
+      }
+    },
+  })
+}
+
+/** 自助置顶进行中 */
+const boosting = ref(false)
+
+/** 用积分自助置顶自己的笔记（消耗固定积分，置顶 24 小时） */
+const handleBoostNote = () => {
+  const price = 50 // 与后端 PointsService.BOOST_COST 保持一致
+  Modal.confirm({
+    title: '确认置顶',
+    content: `将消耗 ${price} 积分把这篇笔记置顶 24 小时，是否继续？`,
+    okText: '确认置顶',
+    cancelText: '再想想',
+    onOk: async () => {
+      boosting.value = true
+      try {
+        const res = await boostNote(Number(noteDetail.value.id))
+        if (res.code === 0) {
+          antMessage.success('置顶成功，24 小时后自动下架')
+          await fetchNoteDetail()
+        }
+      } catch (e) {
+        antMessage.error(e?.description || e?.message || '置顶失败')
+      } finally {
+        boosting.value = false
+      }
+    },
+  })
+}
+
 const handleCollect = async () => {
   if (!userStore.isLogin) {
     antMessage.warning('请先登录后再收藏！')
@@ -384,55 +485,74 @@ const handleLike = async (comment) => {
   }
 }
 
-const handleReportNote = () => {
+// ===== 举报（笔记 / 评论）=====
+// 举报理由预设项；最后一项要求用户自行补充说明
+const REPORT_PRESETS = [
+  '垃圾广告或推广内容',
+  '色情低俗内容',
+  '违法违规内容',
+  '侵犯他人权益（抄袭 / 泄露隐私）',
+  '内容不实或误导他人',
+  '其他（请在下方补充说明）',
+]
+const REPORT_OTHER = REPORT_PRESETS[REPORT_PRESETS.length - 1]
+const REPORT_MAX_LEN = 200
+
+const reportVisible = ref(false)
+const reportSubmitting = ref(false)
+const reportTarget = reactive({ type: 'note', id: null, label: '' })
+const reportPreset = ref(REPORT_PRESETS[0])
+const reportDetail = ref('')
+
+/** 打开举报弹窗（type: note / comment） */
+const openReport = (type, id, label) => {
   if (!userStore.isLogin) {
     antMessage.warning('请先登录后再举报！')
     router.push('/login')
     return
   }
-  Modal.confirm({
-    title: '举报内容',
-    content: '确认将该笔记提交审核吗？',
-    okType: 'danger',
-    onOk: async () => {
-      try {
-        const res = await reportNote(Number(noteDetail.value.id))
-        if (res.code === 0) {
-          antMessage.success('已提交举报，内容将进入审核')
-        } else {
-          antMessage.error('举报失败')
-        }
-      } catch (err) {
-        antMessage.error(err?.description || err?.message || '举报失败')
-      }
-    },
-  })
+  reportTarget.type = type
+  reportTarget.id = Number(id)
+  reportTarget.label = label || (type === 'note' ? '该笔记' : '该评论')
+  reportPreset.value = REPORT_PRESETS[0]
+  reportDetail.value = ''
+  reportVisible.value = true
 }
 
-const handleReportComment = (comment) => {
-  if (!userStore.isLogin) {
-    antMessage.warning('请先登录后再举报！')
-    router.push('/login')
+/** 组装最终理由：预设项 + 可选补充说明；选「其他」时必须填写说明 */
+const buildReportReason = () => {
+  const detail = reportDetail.value.trim()
+  if (reportPreset.value === REPORT_OTHER) return detail
+  return detail ? `${reportPreset.value}：${detail}` : reportPreset.value
+}
+
+const submitReport = async () => {
+  const reason = buildReportReason()
+  if (!reason) {
+    antMessage.warning('请填写举报理由')
     return
   }
-  Modal.confirm({
-    title: '举报评论',
-    content: `确认举报这条评论吗？`,
-    okType: 'danger',
-    onOk: async () => {
-      try {
-        const res = await reportComment({ id: Number(comment.id), reason: '用户举报' })
-        if (res.code === 0) {
-          antMessage.success('已提交举报，评论将进入审核')
-          await fetchComments()
-        } else {
-          antMessage.error('举报失败')
-        }
-      } catch (err) {
-        antMessage.error(err?.description || err?.message || '举报失败')
-      }
-    },
-  })
+  if (reason.length > REPORT_MAX_LEN) {
+    antMessage.warning(`举报理由不能超过 ${REPORT_MAX_LEN} 字`)
+    return
+  }
+  reportSubmitting.value = true
+  try {
+    const res = reportTarget.type === 'note'
+      ? await reportNote(reportTarget.id, reason)
+      : await reportComment({ id: reportTarget.id, reason })
+    if (res.code === 0) {
+      antMessage.success('已提交举报，内容将进入审核')
+      reportVisible.value = false
+      if (reportTarget.type === 'comment') await fetchComments()
+    } else {
+      antMessage.error('举报失败')
+    }
+  } catch (err) {
+    antMessage.error(err?.description || err?.message || '举报失败')
+  } finally {
+    reportSubmitting.value = false
+  }
 }
 
 const fetchNoteDetail = async () => {
@@ -686,6 +806,16 @@ onMounted(() => {
             <a-button v-if="canEdit" size="small" class="author-action-btn" @click="startEdit">
               <EditOutlined /> 编辑
             </a-button>
+            <!-- 自助置顶：消耗积分把自己的已发布笔记置顶 24 小时 -->
+            <a-button
+              v-if="canEdit && noteDetail.status === 'published' && !noteDetail.locked"
+              size="small"
+              class="author-action-btn"
+              :loading="boosting"
+              @click="handleBoostNote"
+            >
+              <VerticalAlignTopOutlined /> {{ noteDetail.isTop ? '续期置顶' : '置顶' }}
+            </a-button>
             <template v-if="userStore.isLogin && noteDetail.authorId && noteDetail.authorId !== userStore.id">
               <FollowButton
                 :userId="noteDetail.authorId"
@@ -696,7 +826,22 @@ onMounted(() => {
                 <MessageOutlined /> 私信
               </a-button>
             </template>
-            <a class="stat-item report-btn" @click="handleReportNote">举报</a>
+            <!-- 打赏作者：预设档位，仅对他人且未锁定（已解锁）的笔记展示 -->
+            <a-dropdown
+              v-if="userStore.isLogin && noteDetail.authorId && noteDetail.authorId !== userStore.id && !noteDetail.locked"
+            >
+              <a-button size="small" class="author-action-btn" :loading="tipping">
+                <GiftOutlined /> 打赏
+              </a-button>
+              <template #overlay>
+                <a-menu>
+                  <a-menu-item v-for="amt in [1, 5, 10, 50]" :key="amt" @click="handleTipNote(amt)">
+                    打赏 {{ amt }} 积分
+                  </a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
+            <a class="stat-item report-btn" @click="openReport('note', noteDetail.id, noteDetail.title)">举报</a>
           </div>
         </div>
       </div>
@@ -715,14 +860,28 @@ onMounted(() => {
       <div v-if="noteDetail.coverImage" class="note-cover">
         <img :src="noteDetail.coverImage" alt="笔记封面" />
       </div>
-      <!-- 付费星球内容锁：未加入星球时提示解锁 -->
+      <!-- 内容锁：付费笔记（按积分解锁）/ 付费星球专属（需加入星球） -->
       <div v-if="noteDetail.locked" class="star-lock-banner">
         <LockOutlined class="lock-icon" />
         <div class="lock-text">
-          <p class="lock-title">本内容为付费星球专属内容</p>
-          <p class="lock-desc">加入星球后即可阅读全文，并享受星球内全部内容</p>
+          <template v-if="Number(noteDetail.price) > 0">
+            <p class="lock-title">本内容需要 {{ noteDetail.price }} 积分解锁</p>
+            <p class="lock-desc">解锁后可永久阅读全文（作者将获得 90% 收益）</p>
+          </template>
+          <template v-else>
+            <p class="lock-title">本内容为付费星球专属内容</p>
+            <p class="lock-desc">加入星球后即可阅读全文，并享受星球内全部内容</p>
+          </template>
         </div>
-        <a-button type="primary" @click="goLockedStar">
+        <a-button
+          v-if="Number(noteDetail.price) > 0"
+          type="primary"
+          :loading="unlocking"
+          @click="handleUnlockNote"
+        >
+          <LockOutlined /> 用 {{ noteDetail.price }} 积分解锁
+        </a-button>
+        <a-button v-else type="primary" @click="goLockedStar">
           <TeamOutlined /> 去加入星球
         </a-button>
       </div>
@@ -887,7 +1046,7 @@ onMounted(() => {
           <div class="comment-actions" v-if="userStore.isLogin">
             <LikeButton :liked="item._liked" :count="item.likeCount || 0" @toggle="handleLike(item)" />
             <a @click="handleReply(item)" class="comment-action">回复</a>
-            <a @click="handleReportComment(item)" class="comment-action report-action">举报</a>
+            <a @click="openReport('comment', item.id, '这条评论')" class="comment-action report-action">举报</a>
           </div>
 
           <div v-if="item.replies && item.replies.length > 0" class="replies-list">
@@ -906,13 +1065,51 @@ onMounted(() => {
               <div class="comment-actions reply-actions" v-if="userStore.isLogin">
                 <LikeButton :liked="reply._liked" :count="reply.likeCount || 0" @toggle="handleLike(reply)" />
                 <a @click="handleReply(reply)" class="comment-action">回复</a>
-                <a @click="handleReportComment(reply)" class="comment-action report-action">举报</a>
+                <a @click="openReport('comment', reply.id, '这条回复')" class="comment-action report-action">举报</a>
               </div>
             </div>
           </div>
         </div>
       </div>
     </a-card>
+
+    <!-- 举报弹窗：收集举报理由（预设选项 + 可选补充说明） -->
+    <a-modal
+      v-model:open="reportVisible"
+      title="举报"
+      :confirm-loading="reportSubmitting"
+      ok-text="提交举报"
+      cancel-text="取消"
+      ok-type="danger"
+      @ok="submitReport"
+    >
+      <div class="report-form">
+        <p class="report-target">
+          举报对象：<b>{{ reportTarget.label }}</b>
+        </p>
+        <div class="report-field">
+          <span class="report-label">举报理由<em>*</em></span>
+          <a-radio-group v-model:value="reportPreset" class="report-presets">
+            <a-radio v-for="p in REPORT_PRESETS" :key="p" :value="p">{{ p }}</a-radio>
+          </a-radio-group>
+        </div>
+        <div class="report-field">
+          <span class="report-label">
+            补充说明
+            <span class="report-label-tip">
+              {{ reportPreset === REPORT_OTHER ? '（必填）' : '（选填，会一并提交给管理员）' }}
+            </span>
+          </span>
+          <a-textarea
+            v-model:value="reportDetail"
+            :rows="3"
+            :maxlength="REPORT_MAX_LEN"
+            show-count
+            :placeholder="reportPreset === REPORT_OTHER ? '请说明举报原因' : '可补充具体情况，便于管理员核实'"
+          />
+        </div>
+      </div>
+    </a-modal>
   </div>
 </template>
 
@@ -1153,6 +1350,36 @@ onMounted(() => {
 }
 .report-btn:hover {
   color: var(--color-error);
+}
+/* 举报弹窗：理由选择与补充说明 */
+.report-form .report-target {
+  margin: 0 0 16px;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+}
+.report-form .report-field {
+  margin-bottom: 16px;
+}
+.report-form .report-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+.report-form .report-label em {
+  margin-left: 2px;
+  color: var(--color-error);
+  font-style: normal;
+}
+.report-form .report-label-tip {
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+.report-form .report-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .follow-author-btn {
   margin-left: 4px;

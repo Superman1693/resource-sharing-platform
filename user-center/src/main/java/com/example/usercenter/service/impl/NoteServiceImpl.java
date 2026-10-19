@@ -10,10 +10,13 @@ import com.example.usercenter.exception.BusinessException;
 import com.example.usercenter.mapper.LikeRecordMapper;
 import com.example.usercenter.mapper.NoteMapper;
 import com.example.usercenter.mapper.StarMapper;
+import com.example.usercenter.mapper.StarMemberMapper;
+import com.example.usercenter.mapper.PointsLogMapper;
 import com.example.usercenter.mapper.UserMapper;
 import org.redisson.api.RBloomFilter;
 import com.example.usercenter.model.domain.LikeRecord;
 import com.example.usercenter.model.domain.Note;
+import com.example.usercenter.model.domain.PointsLog;
 import com.example.usercenter.model.domain.User;
 import com.example.usercenter.model.domain.request.NoteQueryRequest;
 import com.example.usercenter.event.NoteHotScoreEvent;
@@ -38,6 +41,7 @@ import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Date;
 import java.util.List;
@@ -47,6 +51,7 @@ import java.util.stream.Collectors;
 
 import static com.example.usercenter.contant.UserConstant.ADMIN_ROLE;
 import static com.example.usercenter.contant.UserConstant.USER_LOGIN_STATE;
+import com.example.usercenter.model.domain.StarMember;
 import com.example.usercenter.model.dto.LoginUserDTO;
 import com.example.usercenter.utils.SensitiveWordChecker;
 import com.example.usercenter.utils.UserContext;
@@ -73,6 +78,12 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
 
     @Resource
     private StarMapper starMapper;
+
+    @Resource
+    private StarMemberMapper starMemberMapper;
+
+    @Resource
+    private PointsLogMapper pointsLogMapper;
 
     @Resource
     private ApplicationEventPublisher eventPublisher;
@@ -189,12 +200,25 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "分类不能为空");
         }
 
+        // 【安全修复】校验笔记归属的星球：starId 来自客户端请求体，
+        // 不校验则任何登录用户都能把内容写入任意星球（含自己未加入的），击穿多租户写入隔离。
+        if (note.getStarId() != null) {
+            QueryWrapper<StarMember> memberWrapper = new QueryWrapper<>();
+            memberWrapper.eq("star_id", note.getStarId()).eq("user_id", loginUser.getId());
+            Long memberCount = starMemberMapper.selectCount(memberWrapper);
+            if (memberCount == null || memberCount == 0) {
+                throw new BusinessException(ErrorCode.NO_AUTH, "你不是该星球的成员，无法在该星球发布内容");
+            }
+        }
+
         // 设置作者信息
         note.setAuthorId(loginUser.getId());
         note.setAuthor(loginUser.getUsername());
         note.setViewCount(0);
         note.setCommentCount(0);
         note.setLikeCount(0);
+        // 付费笔记售价（0 = 免费；上限按用户等级动态给出）
+        note.setPrice(normalizeNotePrice(note.getPrice(), loginUser.getId()));
         // status：空默认 published；支持 draft/scheduled
         if (StringUtils.isBlank(note.getStatus())) {
             note.setStatus("published");
@@ -277,6 +301,10 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
         if (StringUtils.isNotBlank(note.getCoverImage())) {
             oldNote.setCoverImage(note.getCoverImage());
         }
+        // 付费笔记售价（传 null 表示不修改；上限按用户等级动态给出）
+        if (note.getPrice() != null) {
+            oldNote.setPrice(normalizeNotePrice(note.getPrice(), loginUser.getId()));
+        }
         String previousStatus = oldNote.getStatus();
         boolean becamePublished = false;
         if (StringUtils.isNotBlank(note.getStatus())) {
@@ -286,11 +314,24 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
                     && ("published".equals(newStatus) || "scheduled".equals(newStatus))) {
                 throw new BusinessException(ErrorCode.NO_AUTH, "被拒绝的笔记需修改后重新提交，不能直接发布");
             }
+            // 【修复】禁止把「待审（pending）」的笔记直接改回发布态。
+            // 举报会通过 markNotePending 把笔记置为 pending，原实现只拦 rejected，
+            // 作者可将被举报笔记一键改回 published，审核形同虚设。
+            if ("pending".equals(previousStatus)
+                    && ("published".equals(newStatus) || "scheduled".equals(newStatus))
+                    && !isAdmin(loginUser)) {
+                throw new BusinessException(ErrorCode.NO_AUTH, "笔记正在审核中，不能直接发布，请等待审核结果");
+            }
             oldNote.setStatus(newStatus);
             // 非发布态 → 发布态：刷新发布时间并标记触发发布副作用
             if ("published".equals(newStatus) && !"published".equals(previousStatus)) {
                 oldNote.setPublishTime(new Date());
-                becamePublished = true;
+                // 【修复】仅「从未发放过发布积分的草稿/定时笔记」才触发完整发布副作用。
+                // 原条件为 !"published".equals(previousStatus)，配合 published → draft → published
+                // 可无限重复发放 +20 积分、重复累加星球 content_count。
+                // 注意：becamePublished=false 时下方 "published" 分支仍会同步 ES/知识地图/标签。
+                becamePublished = ("draft".equals(previousStatus) || "scheduled".equals(previousStatus))
+                        && !hasAwardedPublishPoints(oldNote.getId());
             }
         }
         // 记录旧标签列表（用于 diff 关联表），在 setTags 覆盖前取
@@ -320,6 +361,10 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
                     try { tagService.syncNoteTags(id, oldTagList, note.getTagList()); }
                     catch (Exception e) { log.warn("标签关联同步失败: noteId={}", id, e); }
                 }
+            } else if ("published".equals(previousStatus)) {
+                // 【修复】原本已发布、本次改成 draft/pending/rejected 等非公开状态：
+                // 必须做逆向清理，否则已下架内容仍留在 ES 搜索结果中、星球计数虚高。
+                demotePublishedSideEffects(oldNote);
             }
             // draft/scheduled 编辑：不索引 ES，不进发现流
         }
@@ -362,6 +407,7 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
         @CacheEvict(value = "noteDetail", key = "#id"),
         @CacheEvict(value = "noteList", allEntries = true)
     })
+    @Transactional(rollbackFor = Exception.class)
     public boolean likeNote(Long id, HttpServletRequest request) {
         User loginUser = getLoginUser(request);
         if (loginUser == null) {
@@ -392,7 +438,9 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
         eventPublisher.publishEvent(new NoteHotScoreEvent(this, id));
 
         // 给笔记作者 +2 积分
-        if (note.getAuthorId() != null) {
+        // 【修复】自赞不计分：否则作者可以给自己的笔记反复点赞刷分（虽受唯一约束限制，
+        // 但配合多篇笔记仍可稳定增加收益），这里直接排除作者本人。
+        if (note.getAuthorId() != null && !note.getAuthorId().equals(loginUser.getId())) {
             pointsService.addPoints(note.getAuthorId(), 2, "like", "note", id, "笔记被点赞");
         }
 
@@ -491,6 +539,50 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
     }
 
     /**
+     * 用积分自助置顶笔记。
+     *
+     * <p>消耗 {@code PointsService.BOOST_COST} 积分、置顶 {@code BOOST_HOURS} 小时；
+     * 到期由 {@code ExpireTopNoteTask} 自动取消（把 is_top 置回 0 并清空 top_until）。
+     * 与管理员置顶的区别：管理员置顶不带 top_until，不会自动过期。</p>
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    @CacheEvict(value = {"noteList", "noteDetail"}, allEntries = true)
+    public boolean boostNote(Long id, Long userId) {
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.NOT_LOGIN, "请先登录");
+        }
+        Note note = this.getById(id);
+        if (note == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记不存在");
+        }
+        if (!userId.equals(note.getAuthorId())) {
+            throw new BusinessException(ErrorCode.NO_AUTH, "只能置顶自己的笔记");
+        }
+        if (!"published".equals(note.getStatus())) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "只有已发布的笔记可以置顶");
+        }
+        // 置顶数量上限（排除自己，便于对已置顶的笔记续期）
+        QueryWrapper<Note> countWrapper = new QueryWrapper<>();
+        countWrapper.eq("is_top", 1).eq("status", "published").ne("id", id);
+        if (this.count(countWrapper) >= 10) {
+            throw new BusinessException(ErrorCode.TOO_MANY_TOPS);
+        }
+        // 扣积分（余额不足抛异常；本方法有事务，不会出现「扣了分却没置顶」）
+        pointsService.spend(userId, PointsService.BOOST_COST, "boost", "note", id,
+                "自助置顶《" + note.getTitle() + "》" + PointsService.BOOST_HOURS + " 小时");
+
+        Date until = new Date(System.currentTimeMillis() + PointsService.BOOST_HOURS * 3600_000L);
+        Note update = new Note();
+        update.setId(id);
+        update.setIsTop(1);
+        update.setTopUntil(until);
+        boolean ok = this.updateById(update);
+        log.info("自助置顶成功: noteId={}, userId={}, 到期时间={}", id, userId, until);
+        return ok;
+    }
+
+    /**
      * 处理标签（JSON字符串和List互转）
      */
     private void processNoteTags(Note note) {
@@ -581,6 +673,38 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
      * 由 createNote(published)、approveNote、ScheduledPublishTask 复用，保证三处一致
      * @param awardPoints 是否发放发布积分（首次发布 true；审核通过 false，因举报转 pending 前已发过）
      */
+    /**
+     * 校验并归一化笔记售价：null / 负数 → 0（免费），超过「当前等级售价上限」抛异常。
+     *
+     * <p>上限不再是一个写死的常量，而是按用户等级（累计获得积分）动态给出，
+     * 见 {@code PointsLevel}。L1（新手）上限为 0，即新号不能给内容定价。</p>
+     */
+    private int normalizeNotePrice(Integer price, Long userId) {
+        if (price == null || price < 0) {
+            return 0;
+        }
+        int limit = pointsService.getPriceLimit(userId);
+        if (price > limit) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, limit <= 0
+                    ? "当前等级暂不能设置售价，可通过签到、发布、互动累积积分提升等级"
+                    : "当前等级售价上限为 " + limit + " 积分，提升等级可获得更高上限");
+        }
+        return price;
+    }
+
+    /**
+     * 该笔记是否已发放过「发布笔记」积分。
+     *
+     * <p>用于让发布副作用（+20 积分 / 星球内容计数 +1）幂等：同一篇笔记
+     * 反复 {@code published → draft → published} 不应重复发放积分。</p>
+     */
+    private boolean hasAwardedPublishPoints(Long noteId) {
+        if (noteId == null) return false;
+        Long cnt = pointsLogMapper.selectCount(new QueryWrapper<PointsLog>()
+                .eq("type", "publish").eq("ref_type", "note").eq("ref_id", noteId));
+        return cnt != null && cnt > 0;
+    }
+
     private void publishSideEffects(Note note, boolean awardPoints) {
         // 加入布隆过滤器
         try { noteBloomFilter.add(note.getId()); }
@@ -746,10 +870,41 @@ public class NoteServiceImpl extends ServiceImpl<NoteMapper, Note> implements No
     @Override
     @CacheEvict(value = {"noteList", "noteDetail"}, allEntries = true)
     public boolean markNotePending(Long id) {
-        Note update = new Note();
-        update.setId(id);
-        update.setStatus("pending");
-        return this.updateById(update);
+        Note note = this.getById(id);
+        if (note == null) {
+            // 与原实现保持一致的宽松语义：笔记不存在时静默失败（举报流程不应因此报错）
+            return false;
+        }
+        boolean wasPublished = "published".equals(note.getStatus());
+        note.setStatus("pending");
+        note.setUpdateTime(new Date());
+        boolean result = this.updateById(note);
+        // 【修复】原实现只改 status、不做逆向清理 → 被举报笔记仍留在 ES 索引中
+        // （搜索结果里还能搜到），且星球 content_count 虚高、知识地图节点残留。
+        // 这里复用与 rejectNote 相同的降态清理；审核通过时由 approveNote 补回。
+        if (result && wasPublished) {
+            demotePublishedSideEffects(note);
+        }
+        return result;
+    }
+
+    /**
+     * 已发布内容「降态」（转为 pending / rejected / draft 等非公开状态）时的逆向清理：
+     * 从 ES 移除索引、星球内容计数 -1、知识地图移除节点。
+     *
+     * <p>原先只有 {@code rejectNote} 做了这件事；举报冻结（markNotePending）与作者把
+     * 已发布笔记改回草稿都只改了 status，导致内容在搜索结果中继续可见、计数长期虚高。</p>
+     */
+    private void demotePublishedSideEffects(Note note) {
+        if (note == null || note.getId() == null) return;
+        try { esSearchService.deleteNote(note.getId()); }
+        catch (Exception e) { log.warn("ES 删除失败: noteId={}", note.getId(), e); }
+        if (note.getStarId() != null) {
+            try { starMapper.updateContentCount(note.getStarId(), -1); }
+            catch (Exception e) { log.warn("星球内容计数-1失败: noteId={}", note.getId(), e); }
+        }
+        try { knowledgeService.removeNodeFromNote(note.getStarId(), note.getId()); }
+        catch (Exception e) { log.warn("知识地图节点移除失败: noteId={}", note.getId(), e); }
     }
 
     /**

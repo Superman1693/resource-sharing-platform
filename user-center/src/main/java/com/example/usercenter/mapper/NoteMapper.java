@@ -41,4 +41,8 @@ public interface NoteMapper extends BaseMapper<Note> {
     /** 原子批量递增浏览量（用于 Redis 缓冲刷新） */
     @Update("UPDATE note SET view_count = view_count + #{delta} WHERE id = #{id}")
     int incrementViewCountByDelta(@Param("id") Long id, @Param("delta") long delta);
+
+    /** 原子递减评论数（删除评论/回复时使用；GREATEST 防止历史脏数据被减成负数） */
+    @Update("UPDATE note SET comment_count = GREATEST(comment_count - #{delta}, 0) WHERE id = #{id}")
+    int decrementCommentCount(@Param("id") Long id, @Param("delta") int delta);
 }

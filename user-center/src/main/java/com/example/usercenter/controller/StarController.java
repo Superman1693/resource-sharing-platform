@@ -57,6 +57,9 @@ public class StarController extends BaseController {
     @Resource
     private com.example.usercenter.utils.SensitiveWordChecker sensitiveWordChecker;
 
+    @Resource
+    private com.example.usercenter.service.PointsService pointsService;
+
     /**
      * 获取星球列表
      */
@@ -509,6 +512,11 @@ public class StarController extends BaseController {
         if (starMapper.selectCount(dupWrapper) > 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "已存在同名星球");
         }
+        // 【积分门槛】创建星球消耗固定积分（PointsService.CREATE_STAR_COST）。
+        // 方法上已有 @Transactional，余额不足会在扣分处抛异常，不会留下半成品星球。
+        pointsService.spend(loginUser.getUserId(),
+                com.example.usercenter.service.PointsService.CREATE_STAR_COST,
+                "create_star", "star", null, "创建星球《" + name + "》");
         // 敏感词校验
         sensitiveWordChecker.check("星球名称或简介", name, description);
 

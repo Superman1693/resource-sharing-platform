@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { useUserStore } from '../store/userLogin'
 import { message } from 'ant-design-vue'
 import { githubLogin, qqLogin } from '../utils/api'
-import { validateOAuthState } from '../utils/oauth'
+import { validateOAuthState, resolveOAuthProvider } from '../utils/oauth'
 
 const router = useRouter()
 const store = useUserStore()
@@ -17,18 +17,22 @@ onMounted(async () => {
     const urlParams = new URLSearchParams(window.location.search)
     const code = urlParams.get('code')
     const state = urlParams.get('state')
-    const provider = urlParams.get('provider') || (state === 'qq_login' ? 'qq' : 'github')
-
     if (!code) {
       error.value = '未收到授权码，请重试'
       loading.value = false
       return
     }
 
+    // 识别 provider：优先取 URL 上的 provider，其次用 sessionStorage 里保存的 state 反查
+    // （原先靠「state === 'qq_login'」猜来源，现在两个渠道都使用随机 state）
+    const provider = urlParams.get('provider') || resolveOAuthProvider(state)
+
     // 验证 state 参数防止 CSRF
-    // QQ 分支的 state 是后端固定值 "qq_login"（用于识别来源），并非随机值，跳过校验；
-    // GitHub 分支的 state 由 utils/oauth.js 随机生成并存入 sessionStorage，必须校验。
-    if (state && state !== 'qq_login' && !validateOAuthState(state, provider)) {
+    // 【修复】原条件 `state && state !== 'qq_login' && !validate(...)` 有两个问题：
+    //   ① 开头的 `state &&` 使「不带 state 的回调」直接跳过校验 —— 攻击者省略 state 即可绕过；
+    //   ② QQ 分支使用后端固定值且被显式排除，等于完全没有 CSRF 防护。
+    // 现在两种 provider 都要求携带有效 state。
+    if (!provider || !validateOAuthState(state, provider)) {
       error.value = '安全验证失败，请重试'
       loading.value = false
       return

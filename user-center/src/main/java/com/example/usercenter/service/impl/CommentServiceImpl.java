@@ -27,6 +27,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -77,8 +78,6 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
     @Resource
     private CommentMapper commentMapper;
 
-    private static final Set<String> SENSITIVE_WORDS = Set.of("博彩", "赌博", "诈骗", "色情", "刷单", "代开发票", "贷款", "兼职返利");
-
     /**
      * 获取评论列表（修复分页 + 填充更多字段）
      */
@@ -100,19 +99,13 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
             queryWrapper.like("content", keyword);
         }
 
-        // 状态筛选（核心修复：区分管理员/普通用户）
+        // 状态筛选：评论已无「待审核」概念。
+        // 普通用户恒只看 approved（hidden 是被屏蔽内容，不能越权查看）；
+        // 管理员可显式筛选任意状态，或不传 status 查看全部（便于在「评论管理」中处理）。
         if (StringUtils.isNotBlank(status)) {
-            // 传了status参数：管理员可查所有状态，普通用户只能查approved
-            if (!isAdmin && !"approved".equals(status)) {
-                throw new BusinessException(ErrorCode.NO_AUTH, "普通用户仅可查看已审核评论");
-            }
-            queryWrapper.eq("status", status);
-        } else {
-            // 未传status参数：管理员查所有状态，普通用户只查approved
-            if (!isAdmin) {
-                queryWrapper.eq("status", "approved");
-            }
-            // 管理员未传status时，不筛选状态（查所有）
+            queryWrapper.eq("status", isAdmin ? status : CommentStatus.APPROVED.getCode());
+        } else if (!isAdmin) {
+            queryWrapper.eq("status", CommentStatus.APPROVED.getCode());
         }
 
         // 只查询顶级评论（非回复）
@@ -184,7 +177,9 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         comment.setStarId(note.getStarId());
         comment.setUserId(loginUser.getId());
         comment.setContent(content);
-        comment.setStatus(resolveModerationStatus(content, CommentStatus.PENDING.getCode()));
+        // 【变更】评论不再人工审核：上面的 sensitiveWordChecker.check 已做敏感词拦截
+        // （命中直接抛异常拒绝发布），通过校验的评论立即可见。
+        comment.setStatus(CommentStatus.APPROVED.getCode());
         comment.setLikeCount(0);
         comment.setCreateTime(new Date());
 
@@ -253,7 +248,8 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         comment.setUserId(loginUser.getId());
         comment.setContent(content);
         comment.setParentId(commentId);
-        comment.setStatus(resolveModerationStatus(content, "approved"));
+        // 【变更】同 addComment：回复也不再审核，敏感词校验已在上方完成
+        comment.setStatus(CommentStatus.APPROVED.getCode());
         comment.setLikeCount(0);
         comment.setCreateTime(new Date());
 
@@ -261,6 +257,10 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         if (!saved) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "回复评论失败");
         }
+
+        // 【修复】回复同样属于评论，需计入笔记评论数。
+        // 原实现只在 addComment 中调用，导致 note.comment_count 长期不含回复。
+        noteService.asyncIncrementCommentCount(noteId);
 
         // 通知被回复的评论作者
         User sender = userMapper.selectById(loginUser.getId());
@@ -330,32 +330,41 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         // 补充：级联删除该评论的所有回复
         QueryWrapper<Comment> replyWrapper = new QueryWrapper<>();
         replyWrapper.eq("parent_id", id);
+        long replyCount = this.count(replyWrapper);
         this.remove(replyWrapper);
 
         // 删除主评论
-        return this.removeById(id);
+        boolean removed = this.removeById(id);
+        // 【修复】删除评论需同步递减笔记评论数（含级联删除的回复）。
+        // 原实现只删记录、不减计数，导致 note.comment_count 只增不减、永久虚高。
+        if (removed) {
+            noteMapper.decrementCommentCount(comment.getNoteId(), (int) (replyCount + 1));
+        }
+        return removed;
     }
 
     /**
-     * 审核评论（优化逻辑）
+     * 设置评论可见状态（管理员）。
+     *
+     * <p>评论不再经过人工审核（发布时只做敏感词过滤），因此本方法只承担
+     * 「屏蔽违规评论 / 恢复被举报冻结的评论」这一内容治理职责。</p>
      */
     @Override
-    public boolean approveComment(Long id, String status, HttpServletRequest request) {
+    public boolean setCommentStatus(Long id, String status, HttpServletRequest request) {
         User loginUser = getLoginUser(request);
         if (loginUser == null || !isAdmin(loginUser)) {
-            throw new BusinessException(ErrorCode.NO_AUTH, "仅管理员可审核评论");
+            throw new BusinessException(ErrorCode.NO_AUTH, "仅管理员可操作评论状态");
         }
-
+        if (!CommentStatus.APPROVED.getCode().equals(status)
+                && !CommentStatus.HIDDEN.getCode().equals(status)) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "状态只能是 approved 或 hidden");
+        }
         Comment comment = this.getById(id);
         if (comment == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "评论不存在");
         }
-
-        // 校验状态合法性（fromCode 内部会抛异常）
-        CommentStatus targetStatus = CommentStatus.fromCode(status);
-
-        comment.setStatus(targetStatus.getCode());
-        comment.setUpdateTime(new Date()); // 补充更新时间
+        comment.setStatus(status);
+        comment.setUpdateTime(new Date());
         return this.updateById(comment);
     }
 
@@ -363,6 +372,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
      * 点赞评论（优化空值处理）
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public boolean likeComment(Long id, HttpServletRequest request) {
         User loginUser = getLoginUser(request);
         if (loginUser == null) {
@@ -403,8 +413,10 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
             throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "评论不存在");
         }
 
-        String riskStatus = resolveModerationStatus(comment.getContent(), CommentStatus.PENDING.getCode());
-        comment.setStatus(riskStatus);
+        // 【变更】举报即冻结：直接把评论置为 hidden，等待管理员在「评论管理」中处理。
+        // 原实现用 resolveModerationStatus(内容) 推导状态（按内容是否含敏感词），
+        // 与「举报」这个动作本身无关，逻辑并不成立。
+        comment.setStatus(CommentStatus.HIDDEN.getCode());
         comment.setUpdateTime(new Date());
         boolean updated = this.updateById(comment);
         if (!updated) {
@@ -544,18 +556,5 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
      */
     private boolean isAdmin(User user) {
         return user != null && user.getUserRole() != null && user.getUserRole() == ADMIN_ROLE;
-    }
-
-    private String resolveModerationStatus(String content, String defaultStatus) {
-        if (StringUtils.isBlank(content)) {
-            return defaultStatus;
-        }
-        String lowerContent = content.toLowerCase();
-        for (String word : SENSITIVE_WORDS) {
-            if (lowerContent.contains(word.toLowerCase())) {
-                return CommentStatus.HIDDEN.getCode();
-            }
-        }
-        return defaultStatus;
     }
 }

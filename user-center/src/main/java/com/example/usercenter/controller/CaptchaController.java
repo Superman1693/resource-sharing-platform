@@ -1,5 +1,6 @@
 package com.example.usercenter.controller;
 
+import com.example.usercenter.annotation.RateLimit;
 import com.example.usercenter.common.BaseResponse;
 import com.example.usercenter.common.ResultUtils;
 import com.example.usercenter.service.CaptchaService;
@@ -32,6 +33,7 @@ public class CaptchaController {
      */
     @GetMapping("/get")
     @Operation(summary = "获取图形验证码")
+    @RateLimit(key = "captcha", windowSeconds = 60, maxRequests = 30)
     public BaseResponse<Map<String, String>> getCaptcha() {
         String result = captchaService.generateCaptcha();
         String[] parts = result.split(":");

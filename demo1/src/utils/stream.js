@@ -139,13 +139,16 @@ const parseSSELine = (line) => {
  * 流式聊天消息发送
  */
 
-export const sendStreamChatMessage = async (body, onChunk, onError, onComplete) => {
+export const sendStreamChatMessage = async (body, onChunk, onError, onComplete, signal) => {
   let reader
   try {
     const response = await fetch('/api/chat/message/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify(body),
+      // 【修复】支持外部中断：组件卸载时可 abort，避免 reader 继续读取
+      // 并往已销毁的组件里写状态（浪费带宽 + Vue 警告）
+      signal,
     })
 
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
@@ -203,10 +206,18 @@ export const sendStreamChatMessage = async (body, onChunk, onError, onComplete) 
 
     if (onComplete) onComplete()
   } catch (error) {
+    // 主动中断（如组件卸载时 abort）不算失败，静默收尾
+    if (error?.name === 'AbortError') {
+      if (onComplete) onComplete()
+      return
+    }
     if (onError) onError(error)
     else throw error
   } finally {
-    if (reader) reader.releaseLock()
+    // abort 后 reader 可能已被取消，releaseLock 会抛错，这里容错
+    if (reader) {
+      try { reader.releaseLock() } catch (e) { /* ignore */ }
+    }
   }
 }
 

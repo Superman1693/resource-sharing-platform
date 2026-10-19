@@ -110,6 +110,55 @@ cd user-center
   - **为什么不能无条件注入**：`resource`/`learning_path`/`message` 等表**没有 `star_id` 列**（注入即 `Unknown column`）；而 `note` 需跨星球公开读取，叠加「我的星球」等值条件会互斥导致查空
   - ⚠️ **新增星球相关页面时必须同步登记到 `router.js` 的 `ROUTE_STAR_PARAM`**，否则该页面静默退化为无作用域
   - 隔离能力：纵深防御——即使后端某处漏写 `eq("star_id")`，作用域内也不会读到其他星球数据
+- **内容举报与审核**：`report` 表（`target_type` = note/comment/user，`status` = pending/resolved/ignored）
+  - **举报即冻结**：`POST /note/report/{id}` 会调 `NoteService.markNotePending()` 把笔记置为 `pending`；
+    举报评论则把评论置为 `pending` 并发通知给全部管理员。举报理由由前端弹窗收集（预设项 + 补充说明）后随请求提交。
+  - **公开详情对审核者放行**：`GET /note/{id}` 先走 published 多级缓存，**命中不到时对作者与管理员回退**
+    到 `getNoteDetail(id, userId, isAdmin)`；匿名与其他登录用户仍是「笔记不存在」。
+    ⚠️ 这处回退是必需的——举报会把笔记变成 `pending`，否则管理员在「举报管理 → 查看」里
+    恰恰打不开自己最需要看的内容。
+  - **管理端列表**：`GET /report/list`（`@AdminRequired`）会批量补三个 `@TableField(exist=false)` 派生字段
+    ——`reporterName` / `targetTitle`（笔记标题、评论摘要、用户昵称）/ `targetNoteId`（评论所属笔记，
+    供「查看」跳转；评论没有独立详情页）。
+- **评论不做人工审核**：发布时只走敏感词过滤（`sensitiveWordChecker.check`，命中即抛异常拒绝发布），
+  通过即可见。`comment.status` 只有 `approved` / `hidden` 两态（`CommentStatus` 枚举已精简，
+  `PENDING`/`REJECTED`/`APPROVABLE`/`fromCode` 均已删除）。管理端只能「屏蔽 / 恢复」——
+  `POST /comment/status` 已替代原 `/comment/approve`；举报评论会把状态置为 `hidden`。
+  ⚠️ 后续新增涉及评论状态的代码，不要再引入「待审核」概念。
+- **积分消耗闭环**：`note.price`（0 = 免费）表示解锁所需积分；`POST /note/unlock/{id}` 扣读者、
+  给作者 90%（`note_purchase` 唯一键 `user_id+note_id` 保证幂等，冲突则退回扣款）；
+  `POST /note/tip/{id}` 打赏（单次 1~500、禁止自赏，作者同样得 90%）。
+  `GET /note/{id}` 未解锁时返回 `content=null + locked=true + price`，前端复用星球遮罩展示。
+  ⚠️ 凡积分变动都走 `PointsService`；**扣减必须用 `PointsAccountMapper#incrementAtomically`**（原子 SQL），
+  不要写「查余额 → 改 → update」。
+- **积分消耗的价目与入口**（P2 / P3）：价格常量集中在 `PointsService` ——
+  `BOOST_COST = 50`（自助置顶 24 小时）、`CREATE_STAR_COST = 500`（创建星球）、打赏 1~500；
+  笔记与资源的售价上限**不再是固定常量**，改为按用户等级动态给出（见下方「积分额度与对账」）。
+  - `POST /note/boost/{id}`：作者本人用积分置顶自己的已发布笔记，写 `note.top_until`；
+    到期由 `ExpireTopNoteTask`（每 10 分钟）批量下架。⚠️ **管理员置顶不带 `top_until`，不会过期**。
+  - `POST /resource/download/{id}`：已改为**需登录**；付费资源经 `PointsService#unlockResource`
+    扣分并给上传者 90%。`resource_download` 的唯一键 `(user_id, resource_id)` 同时承担
+    **下载数去重** —— `download_count` 只在该表首次插入时 +1（修掉了「刷新即可刷爆下载数」）。
+  - ⚠️ 新增任何积分消费入口时，扣减一律走 `PointsService#spend` / `#unlockXxx`，
+    不要在业务层直接改 `points_account`。
+- **积分额度与对账**（2026-10-16 新增）
+  - **每日获取上限**：`PointsService.DAILY_EARN_LIMIT = 200`，只约束**平台发放**类型
+    （`EARN_TYPES = sign/publish/like/comment`）——超出按剩余额度**截断发放**并在 `remark` 标注实发数，
+    用尽则**不写流水**。**用户间转移（`unlock_income` / `tip_income` / `resource_income`）不计入、不受限**：
+    那是别人花掉的积分转过来，限流会导致作者收不到报酬。
+  - **售价上限随等级**：后端权威枚举 `model/enums/PointsLevel.java`
+    （L1 新手 0 / L2 活跃 50 / L3 贡献 100 / L4 资深 200 / L5 核心 500，按 `total_earned` 定级）。
+    任何改价校验都走 `pointsService.getPriceLimit(userId)`；前端 `demo1/src/utils/pointsLevel.js`
+    的 `min` 与 `priceLimit` **必须与枚举保持一致**（前端只做展示与输入预校验，最终以后端为准）。
+  - **对账**：`GET /points/reconcile?days=30`（`@AdminRequired`），管理端页面 `Admin/PointsReconcile.vue`。
+    口径：「发放」只算平台发放类型；「消耗」按 `SPEND_TYPES` 白名单；「平台抽成」由三张成交表反推
+    `SUM(成交额 − 收款方实得)` —— 抽成刻意不落账户，所以没有账目表可查。
+  - ⚠️ **`change` 是 MySQL 保留字**：`QueryWrapper` 里必须写 `` `change` ``（带反引号），
+    否则拼出 `change > 0` 这样的非法 SQL；而 `addPoints` 会把异常吞成一行 WARN，
+    表现为**积分整体静默不发**（笔记照发、积分不发），极难发现。
+  - ⚠️ 用 `@Select` 写按日聚合时，**SELECT 与 GROUP BY 的分组表达式必须完全一致**
+    （`DATE_FORMAT(create_time,'%Y-%m-%d')` 不能配 `GROUP BY DATE(create_time)`），
+    否则 MySQL 8 的 `only_full_group_by` 直接报错。
 - Redis 用于：JWT 黑名单、缓存、AI 聊天会话、浏览量批量刷盘
 - Elasticsearch 用于全文搜索（`EsSearchService`，IK 中文分词）
 - Spring AI 集成 OpenAI 兼容接口实现 AI 聊天

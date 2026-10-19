@@ -83,6 +83,9 @@ public class Resource {
      */
     private Integer downloadCount;
 
+    /** 下载所需积分：0 = 免费 */
+    private Integer price;
+
     /**
      * 状态：enabled/disabled
      */

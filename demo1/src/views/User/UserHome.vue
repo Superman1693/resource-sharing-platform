@@ -10,12 +10,13 @@ import {
 import TodayKnowledgeCard from '../../components/TodayKnowledgeCard.vue'
 import ContributionHeatmap from '../../components/ContributionHeatmap.vue'
 import FollowButton from '../../components/FollowButton.vue'
+import { getLevelInfo } from '../../utils/pointsLevel'
 import UserAvatar from '../../components/UserAvatar.vue'
 import { useUserStore } from '../../store/userLogin'
 import {
   getNoteList, getResourceList, getPersonalStats,
   getContributionData, getUserGrowth, getFollowList, getStarFeed,
-  signIn, checkSignedToday, getPointsAccount
+  signIn, checkSignedToday, getPointsAccount, getPointsQuota
 } from '../../utils/api'
 import { message } from 'ant-design-vue'
 import { CATEGORY_TEXT_SHORT } from '../../utils/constant'
@@ -39,6 +40,27 @@ const starFeed = ref([])
 const signedToday = ref(false)
 const signing = ref(false)
 const pointsBalance = ref(0)
+const pointsTotalEarned = ref(0)
+// 等级基于「累计获得」计算：消费积分（解锁/打赏）不会掉级，用户才敢花
+const levelInfo = computed(() => getLevelInfo(pointsTotalEarned.value))
+
+// 今日「平台发放」积分额度（签到/发布/被赞/评论；用户间转移不占额度）
+const todayEarned = ref(0)
+const dailyEarnLimit = ref(0)
+const earnQuotaFull = computed(
+  () => dailyEarnLimit.value > 0 && todayEarned.value >= dailyEarnLimit.value
+)
+const loadEarnQuota = async () => {
+  try {
+    const res = await getPointsQuota()
+    const q = res?.data
+    if (!q) return
+    todayEarned.value = Number(q.todayEarned) || 0
+    dailyEarnLimit.value = Number(q.dailyEarnLimit) || 0
+  } catch (_) {
+    // 额度只是展示信息，失败静默
+  }
+}
 
 // 星球动态点击跳转（feed 里是 noteId 字段）
 const viewFeedNote = (item) => router.push(`/user/noteDetail/${item.noteId}`)
@@ -52,9 +74,18 @@ const handleSignIn = async () => {
     const res = await signIn()
     if (res.code === 0 && res.data) {
       if (res.data.signed) {
+        const before = pointsBalance.value
         signedToday.value = true
         if (res.data.balance != null) pointsBalance.value = res.data.balance
-        message.success('签到成功，积分已入账')
+        // 签到可能因「每日获取上限」而不发分（签到记录仍然写下），据实提示
+        if (res.data.balance != null && res.data.balance > before) {
+          message.success(`签到成功，+${res.data.balance - before} 积分`)
+        } else if (res.data.balance != null) {
+          message.info('签到成功；今日获取额度已满，本次未发放积分')
+        } else {
+          message.success('签到成功，积分已入账')
+        }
+        loadEarnQuota()
       } else {
         // 今日已签（兜底）
         signedToday.value = true
@@ -191,6 +222,10 @@ onMounted(async () => {
 
       const accountRes = results[8]?.status === 'fulfilled' ? results[8].value : null
       pointsBalance.value = accountRes?.data?.balance || 0
+      pointsTotalEarned.value = accountRes?.data?.totalEarned || 0
+
+      // 今日获取额度：独立请求（避免打乱上方按索引取值的 Promise.all 顺序）
+      loadEarnQuota()
     }
   } catch (_) {
     // 静默处理
@@ -276,7 +311,21 @@ onUnmounted(() => io?.disconnect())
             </div>
           </div>
           <div class="sign-right">
-            <span class="sign-balance">当前 {{ pointsBalance }} 积分</span>
+            <span class="sign-balance">
+              <a-tag color="blue" style="margin-right: 6px">Lv.{{ levelInfo.level }} {{ levelInfo.name }}</a-tag>
+              当前 {{ pointsBalance }} 积分
+              <span v-if="levelInfo.next" style="color: #8c8c8c; font-size: 12px; margin-left: 6px">
+                （距 Lv.{{ levelInfo.next.level }} 还需 {{ levelInfo.next.min - levelInfo.total }} 累计积分）
+              </span>
+              <span
+                v-if="dailyEarnLimit > 0"
+                class="sign-quota"
+                :class="{ full: earnQuotaFull }"
+                title="每日通过签到/发布/互动可获得的积分上限；解锁、打赏等收入不占额度"
+              >
+                今日已获取 {{ todayEarned }}/{{ dailyEarnLimit }}
+              </span>
+            </span>
             <button
               class="sign-btn"
               :class="{ 'is-signed': signedToday }"
@@ -800,6 +849,20 @@ onUnmounted(() => io?.disconnect())
 .sign-sub {
   font-size: 0.8125rem;
   color: var(--color-text-muted, #94a3b8);
+}
+
+.sign-quota {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.sign-quota.full {
+  background: #fef3c7;
+  color: #b45309;
 }
 
 .sign-right {

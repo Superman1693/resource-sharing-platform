@@ -11,6 +11,7 @@ import com.example.usercenter.common.ResultUtils;
 import com.example.usercenter.exception.BusinessException;
 import com.example.usercenter.model.domain.Resource;
 import com.example.usercenter.model.dto.LoginUserDTO;
+import com.example.usercenter.service.PointsService;
 import com.example.usercenter.service.ResourceService;
 import com.example.usercenter.utils.AliyunOSSOperator;
 import com.example.usercenter.utils.UserContext;
@@ -39,6 +40,9 @@ public class ResourceController extends BaseController {
 
     @Autowired
     private ResourceService resourceService;
+
+    @Autowired
+    private PointsService pointsService;
 
     @Autowired
     private AliyunOSSOperator aliyunOSSOperator;
@@ -243,10 +247,17 @@ public class ResourceController extends BaseController {
             return;
         }
 
-        // 2. 累加下载次数
-        boolean countIncreased = resourceService.increaseDownloadCount(id);
-        if (!countIncreased) {
-            log.warn("资源{}下载次数累加失败", id);
+        // 2. 解锁校验 + 记录下载
+        //    - 已登录：走 unlockResource —— 付费资源在此扣积分（上传者得 90%），
+        //      同一用户只记一次下载数（修掉原来「刷新下载接口即可无限刷计数」的问题）
+        //    - 匿名：仅放行免费资源，且不计入下载数
+        int price = resource.getPrice() == null ? 0 : resource.getPrice();
+        if (loginUser == null) {
+            if (price > 0) {
+                throw new BusinessException(ErrorCode.NOT_LOGIN, "该资源需要积分下载，请先登录");
+            }
+        } else {
+            pointsService.unlockResource(loginUser.getUserId(), id);
         }
 
         // 3. 修复中文文件名编码（关键）

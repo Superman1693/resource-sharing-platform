@@ -8,7 +8,6 @@ import com.example.usercenter.common.PageResult;
 import com.example.usercenter.common.ResultUtils;
 import com.example.usercenter.exception.BusinessException;
 import com.example.usercenter.model.domain.Comment;
-import com.example.usercenter.model.enums.CommentStatus;
 import com.example.usercenter.service.CommentService;
 import com.example.usercenter.utils.UserContext;
 import jakarta.annotation.Resource;
@@ -167,29 +166,21 @@ public class CommentController extends BaseController {
     }
 
     /**
-     * 审核评论（管理员）
+     * 设置评论可见状态（管理员）—— 评论无「审核」概念，此处仅用于屏蔽 / 恢复
      */
-    @PostMapping("/approve")
-    public BaseResponse<Boolean> approveComment(@RequestBody Map<String, Object> requestBody, HttpServletRequest request) {
-        // 仅管理员可操作
+    @PostMapping("/status")
+    public BaseResponse<Boolean> setCommentStatus(@RequestBody Map<String, Object> requestBody,
+                                                  HttpServletRequest request) {
         requireAdmin();
-
         if (requestBody == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "请求参数为空");
         }
-
         Long id = getLongValueEnhanced(requestBody, "id");
         String status = (String) requestBody.get("status");
-
         if (id == null || id <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "评论ID不合法");
         }
-        if (StringUtils.isBlank(status) || !CommentStatus.APPROVABLE.contains(status)) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "状态只能是 approved 或 rejected");
-        }
-
-        boolean result = commentService.approveComment(id, status, request);
-        return ResultUtils.success(result);
+        return ResultUtils.success(commentService.setCommentStatus(id, status, request));
     }
 
     /**

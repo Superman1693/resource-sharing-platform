@@ -143,6 +143,7 @@ const handleLogout = async () => {
                 <span>运营管理</span>
               </template>
               <a-menu-item key="/main/reportManage">举报管理</a-menu-item>
+              <a-menu-item key="/main/pointsReconcile">积分对账</a-menu-item>
               <a-menu-item key="/main/sensitiveWord">敏感词</a-menu-item>
             </a-sub-menu>
 
@@ -169,7 +170,7 @@ const handleLogout = async () => {
                 <MessageOutlined class="menu-icon" />
                 <span>评论管理</span>
               </template>
-              <a-menu-item key="/main/commentManage">评论审核</a-menu-item>
+              <a-menu-item key="/main/commentManage">评论管理</a-menu-item>
             </a-sub-menu>
 
             <a-sub-menu key="knowledge">

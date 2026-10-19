@@ -2,13 +2,13 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { message as antMessage, Modal } from 'ant-design-vue'
 
-import { getCommentList, deleteComment, approveComment } from '../../utils/api'
+import { getCommentList, deleteComment, setCommentStatus } from '../../utils/api'
 
 const loading = ref(false)
 
+// 【变更】评论不再人工审核，只保留「正常 / 已屏蔽」两种状态
 const statusOptions = [
-  { label: '已审核', value: 'approved' },
-  { label: '待审核', value: 'pending' },
+  { label: '正常', value: 'approved' },
   { label: '已屏蔽', value: 'hidden' },
 ]
 
@@ -50,15 +50,24 @@ const filteredList = computed(() => {
 const fetchCommentList = async () => {
   loading.value = true
   try {
-    const params = {
+    const baseParams = {
       keyword: filterForm.keyword || undefined,
       noteId: filterForm.noteId || undefined,
       status: filterForm.status,
     }
-    const res = await getCommentList(params)
-    const data = res.data || []
-    // ✅ 加固：确保永远是数组，过滤无效项
-    commentList.value = Array.isArray(data) ? data.filter(Boolean) : []
+    // 【修复】后端 /comment/list 单次最多返回 100 条、且不返回总数的，
+    // 原实现只取默认第一页（20 条）→ 管理员最多只能看到 20 条评论，审核覆盖不全。
+    // 这里循环翻页取全（上限 5 页 / 500 条），再由表格做前端分页。
+    const PAGE_SIZE = 100
+    const MAX_PAGES = 5
+    const all = []
+    for (let p = 1; p <= MAX_PAGES; p++) {
+      const res = await getCommentList({ ...baseParams, page: p, pageSize: PAGE_SIZE })
+      const rows = Array.isArray(res.data) ? res.data.filter(Boolean) : []
+      all.push(...rows)
+      if (rows.length < PAGE_SIZE) break // 不足一页说明已到底
+    }
+    commentList.value = all
   } catch (err) {
     if (err?.isBusinessError) {
       if (err.code === 40100) {
@@ -89,13 +98,14 @@ const handleSearch = () => {
 }
 
 // ✅ 【加固】操作方法加record有效性校验，避免传参异常报错
-const handleApprove = async (record) => {
+// 【变更】评论不再人工审核：这里只承担「屏蔽 / 恢复」两件事
+const handleHide = async (record) => {
   if (!record?.id) return antMessage.warning('数据异常，无法操作')
   try {
-    const res = await approveComment(record.id, 'approved')
+    const res = await setCommentStatus(record.id, 'hidden')
     if (res.code === 0) {
-      record.status = 'approved'
-      antMessage.success('评论已通过审核')
+      record.status = 'hidden'
+      antMessage.success('评论已屏蔽')
     } else {
       antMessage.error('操作失败')
     }
@@ -104,13 +114,13 @@ const handleApprove = async (record) => {
   }
 }
 
-const handleHide = async (record) => {
+const handleRestore = async (record) => {
   if (!record?.id) return antMessage.warning('数据异常，无法操作')
   try {
-    const res = await approveComment(record.id, 'hidden')
+    const res = await setCommentStatus(record.id, 'approved')
     if (res.code === 0) {
-      record.status = 'hidden'
-      antMessage.success('评论已屏蔽')
+      record.status = 'approved'
+      antMessage.success('评论已恢复显示')
     } else {
       antMessage.error('操作失败')
     }
@@ -140,8 +150,7 @@ const handleDelete = (record) => {
 }
 
 const statusText = {
-  approved: '已审核',
-  pending: '待审核',
+  approved: '正常',
   hidden: '已屏蔽',
 }
 
@@ -216,16 +225,17 @@ onMounted(() => {
         :loading="loading" 
         row-key="id" 
         :scroll="{ x: 1200 }"
+        :pagination="{ pageSize: 10, showSizeChanger: true, pageSizeOptions: ['10', '20', '50', '100'], showTotal: (t) => `共 ${t} 条` }"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'action'">
             <a-space>
               <a-button
-                v-if="record?.status === 'pending'"
+                v-if="record?.status === 'hidden'"
                 type="link"
-                @click="handleApprove(record)"
-              >通过</a-button>
-              <a-button type="link" @click="handleHide(record)">屏蔽</a-button>
+                @click="handleRestore(record)"
+              >恢复</a-button>
+              <a-button v-else type="link" @click="handleHide(record)">屏蔽</a-button>
               <a-button type="link" danger @click="handleDelete(record)">删除</a-button>
             </a-space>
           </template>

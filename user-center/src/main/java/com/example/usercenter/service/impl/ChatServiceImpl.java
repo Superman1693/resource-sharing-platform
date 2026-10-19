@@ -1,5 +1,7 @@
 package com.example.usercenter.service.impl;
 
+import com.example.usercenter.common.ErrorCode;
+import com.example.usercenter.exception.BusinessException;
 import com.example.usercenter.model.domain.ChatMessage;
 import com.example.usercenter.model.domain.ChatSession;
 import com.example.usercenter.model.domain.request.ChatRequest;
@@ -12,9 +14,15 @@ import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
+import jakarta.annotation.Resource;
+
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import static org.springframework.ai.chat.client.advisor.AbstractChatMemoryAdvisor.CHAT_MEMORY_CONVERSATION_ID_KEY;
 
@@ -29,6 +37,13 @@ public class ChatServiceImpl implements ChatService {
     private final ChatClient chatClient;
     private final RedisChatOperator redisChatOperator;
 
+    /** AI 调用专用线程池：用于给阻塞式 AI 调用加超时（见 CommonConfiguration#aiCallExecutor） */
+    @Resource(name = "aiCallExecutor")
+    private ExecutorService aiCallExecutor;
+
+    /** 非流式 AI 调用超时（秒） */
+    private static final long AI_CALL_TIMEOUT_SECONDS = 60;
+
     @Override
     public ChatMessage sendMessage(ChatRequest chatRequest, Long userId) {
         final String sessionId = resolveSessionId(chatRequest, userId);
@@ -37,12 +52,22 @@ public class ChatServiceImpl implements ChatService {
         ChatMessage userMessage = buildMessage(chatRequest.getContent(), sessionId, userId, "user", "sent");
         redisChatOperator.saveMessage(userMessage);
 
-        // 调用 AI
-        String aiResponse = chatClient.prompt()
-                .user(chatRequest.getContent())
-                .advisors(a -> a.param(CHAT_MEMORY_CONVERSATION_ID_KEY, sessionId))
-                .call()
-                .content();
+        // 调用 AI（带超时保护：上游挂起时及时释放，避免 Tomcat 工作线程被拖满）
+        String aiResponse;
+        try {
+            aiResponse = CompletableFuture.supplyAsync(() -> chatClient.prompt()
+                            .user(chatRequest.getContent())
+                            .advisors(a -> a.param(CHAT_MEMORY_CONVERSATION_ID_KEY, sessionId))
+                            .call()
+                            .content(), aiCallExecutor)
+                    .get(AI_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            log.warn("AI 调用超时: sessionId={}, 超时={}s", sessionId, AI_CALL_TIMEOUT_SECONDS);
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI 响应超时，请稍后重试");
+        } catch (Exception e) {
+            log.error("AI 调用失败: sessionId={}", sessionId, e);
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI 服务暂时不可用，请稍后重试");
+        }
 
         // 修复点3：cleanAiResponse 不再压缩双换行，保留 Markdown 段落格式
         String cleaned = cleanAiResponse(aiResponse);
@@ -69,6 +94,9 @@ public class ChatServiceImpl implements ChatService {
                 .advisors(a -> a.param(CHAT_MEMORY_CONVERSATION_ID_KEY, sessionId))
                 .stream()
                 .content()
+                // 【修复】上游长时间无数据（或中途静默挂起）时中断，
+                // 避免连接常开占用线程与资源
+                .timeout(Duration.ofSeconds(90))
                 .map(chunk -> {
                     if (chunk == null) return "";
                     String cleaned = chunk.trim();
@@ -176,6 +204,12 @@ public class ChatServiceImpl implements ChatService {
         String sid = chatRequest.getSessionId();
         if (sid == null || sid.isBlank()) {
             return createSession(chatRequest.getSessionName(), userId).getSessionId();
+        }
+        // 【安全修复】客户端传入的 sessionId 必须归属当前用户。
+        // 原实现直接 `return sid`，导致携带他人的 sessionId 即可向对方会话写入消息，
+        // 并借助以 sessionId 为 key 的 AI 记忆（ChatMemory）读到对方的完整对话上下文。
+        if (getSession(sid, userId) == null) {
+            throw new BusinessException(ErrorCode.NO_AUTH, "会话不存在或无权访问");
         }
         return sid;
     }

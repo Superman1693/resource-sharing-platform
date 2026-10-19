@@ -226,6 +226,8 @@ CREATE TABLE `note` (
   `collection_id`   BIGINT       DEFAULT NULL COMMENT '所属专栏ID（关联 note_column 表）',
   `collection_sort` INT          NOT NULL DEFAULT 0 COMMENT '专栏内章节序号',
   `is_top`          TINYINT      NOT NULL DEFAULT 0 COMMENT '是否置顶：0=否，1=是（最多 10 条）',
+  `price`           INT          NOT NULL DEFAULT 0 COMMENT '解锁所需积分：0=免费（付费笔记）',
+  `top_until`       DATETIME     DEFAULT NULL COMMENT '自助置顶到期时间（NULL=不过期，通常为管理员置顶）',
   `create_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time`     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   `is_delete`       TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除：0=未删除，1=已删除',
@@ -257,7 +259,7 @@ CREATE TABLE `comment` (
   `username`    VARCHAR(32)  DEFAULT NULL COMMENT '用户名（冗余字段）',
   `avatar`      VARCHAR(255) DEFAULT NULL COMMENT '用户头像（冗余字段）',
   `content`     TEXT         NOT NULL COMMENT '评论内容',
-  `status`      VARCHAR(20)  NOT NULL DEFAULT 'pending' COMMENT '状态：pending=待审核，approved=已通过，rejected=已拒绝，hidden=已隐藏',
+  `status`      VARCHAR(20)  NOT NULL DEFAULT 'approved' COMMENT '状态：approved=正常，hidden=已隐藏（评论不再有人工审核）',
   `like_count`  INT          NOT NULL DEFAULT 0 COMMENT '点赞数',
   `parent_id`   BIGINT       DEFAULT NULL COMMENT '父评论ID（回复用，NULL=一级评论）',
   `create_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -321,6 +323,7 @@ CREATE TABLE `resource` (
   `file_url`       VARCHAR(500) DEFAULT NULL COMMENT '文件URL（阿里云 OSS）',
   `file_size`      BIGINT       DEFAULT NULL COMMENT '文件大小（字节）',
   `download_count` INT          NOT NULL DEFAULT 0 COMMENT '下载次数',
+  `price`          INT          NOT NULL DEFAULT 0 COMMENT '下载所需积分：0=免费',
   `status`         VARCHAR(20)  NOT NULL DEFAULT 'enabled' COMMENT '状态：enabled=启用，disabled=停用',
   `description`    TEXT         DEFAULT NULL COMMENT '资源描述',
   `create_time`    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -586,13 +589,14 @@ CREATE TABLE `points_log` (
   `id`          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '流水ID',
   `user_id`     BIGINT       NOT NULL COMMENT '用户ID',
   `change`      INT          NOT NULL COMMENT '变动积分（正数）',
-  `type`        VARCHAR(20)  NOT NULL COMMENT '类型：sign/publish/like/comment',
-  `ref_type`    VARCHAR(20)  DEFAULT NULL COMMENT '关联类型：note/comment',
+  `type`        VARCHAR(20)  NOT NULL COMMENT '类型：发放 sign/publish/like/comment；消耗 unlock/tip/boost/resource_download/create_star；转移 unlock_income/tip_income/resource_income；退回 resource_refund',
+  `ref_type`    VARCHAR(20)  DEFAULT NULL COMMENT '关联类型：note/comment/resource',
   `ref_id`      BIGINT       DEFAULT NULL COMMENT '关联ID',
   `remark`      VARCHAR(100) DEFAULT NULL COMMENT '备注',
   `create_time` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (`id`),
-  INDEX `idx_user_time` (`user_id`, `create_time`)
+  INDEX `idx_user_time` (`user_id`, `create_time`),
+  INDEX `idx_create_time` (`create_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='积分流水表';
 
 -- ---------------------------------------------------------------------------
@@ -730,3 +734,105 @@ UPDATE `user`
 -- 2. Redis 无需迁移（缓存/计数/锁均会自动重建）；
 --    Elasticsearch 建议在升级后触发一次全量索引同步。
 -- ============================================================================
+
+-- ===========================================================================
+-- 第 12 节：积分消耗（付费笔记解锁 / 打赏）—— 对应迁移脚本 V3
+-- ===========================================================================
+-- 说明：
+--   * 评论不再有人工审核环节：发布时仅做敏感词过滤（命中即拒绝），
+--     `comment.status` 只保留 approved（正常）/ hidden（被屏蔽或举报冻结）；
+--     历史 pending / rejected 数据已在 V3 中统一置为 approved。
+--   * `note.price` 为解锁所需积分（0 = 免费公开）。
+--   * 平台抽成 10%：作者实得 = 成交额 × 90%。
+
+-- ---------------------------------------------------------------------------
+-- 12.1 笔记购买记录（积分解锁）
+-- ---------------------------------------------------------------------------
+DROP TABLE IF EXISTS `note_purchase`;
+CREATE TABLE `note_purchase` (
+  `id`          BIGINT   NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `user_id`     BIGINT   NOT NULL COMMENT '购买者ID',
+  `note_id`     BIGINT   NOT NULL COMMENT '笔记ID',
+  `author_id`   BIGINT   DEFAULT NULL COMMENT '作者ID（冗余，便于对账）',
+  `price`       INT      NOT NULL COMMENT '成交价（积分）',
+  `author_gain` INT      NOT NULL DEFAULT 0 COMMENT '作者实得积分（扣除平台抽成后）',
+  `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '购买时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_user_note` (`user_id`, `note_id`),
+  INDEX `idx_note_id` (`note_id`),
+  INDEX `idx_user_id` (`user_id`),
+  INDEX `idx_author_id` (`author_id`),
+  INDEX `idx_create_time` (`create_time`),
+  CONSTRAINT `fk_purchase_note` FOREIGN KEY (`note_id`) REFERENCES `note` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_purchase_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='笔记购买记录（积分解锁）';
+
+-- ---------------------------------------------------------------------------
+-- 12.2 笔记打赏记录
+-- ---------------------------------------------------------------------------
+DROP TABLE IF EXISTS `note_tip`;
+CREATE TABLE `note_tip` (
+  `id`          BIGINT   NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `user_id`     BIGINT   NOT NULL COMMENT '打赏者ID',
+  `note_id`     BIGINT   NOT NULL COMMENT '笔记ID',
+  `author_id`   BIGINT   DEFAULT NULL COMMENT '作者ID（冗余，便于对账）',
+  `amount`      INT      NOT NULL COMMENT '打赏积分',
+  `author_gain` INT      NOT NULL DEFAULT 0 COMMENT '作者实得积分（扣除平台抽成后）',
+  `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '打赏时间',
+  PRIMARY KEY (`id`),
+  INDEX `idx_note_id` (`note_id`),
+  INDEX `idx_user_id` (`user_id`),
+  INDEX `idx_author_id` (`author_id`),
+  INDEX `idx_create_time` (`create_time`),
+  CONSTRAINT `fk_tip_note` FOREIGN KEY (`note_id`) REFERENCES `note` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_tip_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='笔记打赏记录';
+
+-- ===========================================================================
+-- 第 13 节：积分消耗 P2 / P3 —— 对应迁移脚本 V4
+-- ===========================================================================
+-- 说明：
+--   * `note.top_until` 为自助置顶到期时间（NULL = 不过期，通常为管理员置顶），
+--     到期由 ExpireTopNoteTask 每 10 分钟清理一次。
+--   * `resource.price` 为下载所需积分（0 = 免费）。
+--   * 价目：自助置顶 50 积分 / 24 小时；创建星球 500 积分；
+--     账号等级阈值见前端 `demo1/src/utils/pointsLevel.js`。
+
+-- ---------------------------------------------------------------------------
+-- 13.1 资源下载 / 解锁记录
+--      uk_user_resource 保证「同一用户对同一资源只记一次」——
+--      既让付费资源不重复扣分，也让下载数不再被刷新刷爆。
+-- ---------------------------------------------------------------------------
+DROP TABLE IF EXISTS `resource_download`;
+CREATE TABLE `resource_download` (
+  `id`            BIGINT   NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `user_id`       BIGINT   NOT NULL COMMENT '下载者ID',
+  `resource_id`   BIGINT   NOT NULL COMMENT '资源ID',
+  `uploader_id`   BIGINT   DEFAULT NULL COMMENT '上传者ID（冗余，便于对账）',
+  `price`         INT      NOT NULL DEFAULT 0 COMMENT '成交价（积分），0=免费',
+  `uploader_gain` INT      NOT NULL DEFAULT 0 COMMENT '上传者实得积分（扣除平台抽成后）',
+  `create_time`   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '首次下载时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_user_resource` (`user_id`, `resource_id`),
+  INDEX `idx_resource_id` (`resource_id`),
+  INDEX `idx_user_id` (`user_id`),
+  INDEX `idx_uploader_id` (`uploader_id`),
+  INDEX `idx_create_time` (`create_time`),
+  CONSTRAINT `fk_rd_resource` FOREIGN KEY (`resource_id`) REFERENCES `resource` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_rd_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='资源下载/解锁记录';
+
+-- ===========================================================================
+-- 第 14 节：积分额度与对账 —— 对应迁移脚本 V5
+-- ===========================================================================
+-- 说明：
+--   * V5 为对账报表补时间索引（points_log / note_purchase / note_tip /
+--     resource_download 各加一个 idx_create_time）——对账查询只按 create_time
+--     过滤，原有索引均以 user_id / note_id 为前缀，无法命中。
+--   * 「每日获取上限」与「售价上限随等级」均为**代码层规则**，无表结构变更：
+--       - 每日上限：仅约束平台发放类型（sign/publish/like/comment），
+--         由 PointsService#getTodayEarned + DAILY_EARN_LIMIT 判断；
+--         用户间转移（*_income）不计入、不受限。
+--       - 售价上限：见 `PointsLevel` 枚举（后端权威）与
+--         `demo1/src/utils/pointsLevel.js`（前端展示，阈值需一致）。
+--   * 平台抽成不落任何账户，对账时由三张成交表反推：SUM(成交额 − 收款方实得)。

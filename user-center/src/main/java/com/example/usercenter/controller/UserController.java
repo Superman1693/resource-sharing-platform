@@ -59,6 +59,7 @@ public class UserController extends BaseController {
     private PointsService pointsService;
 
     @PostMapping("/register") // 请求方式为post地址为register
+    @RateLimit(key = "register", windowSeconds = 60, maxRequests = 5)
     public BaseResponse<Long> userRegister(@RequestBody UserRegisterRequest userRegisterRequest) {// 将前端请求的body数据和userRegisterRequest
                                                                                                   // 做一个关联，自动映射到userRegisterRequest对象中
         if (userRegisterRequest == null) {// 判断传入的数据是否为空

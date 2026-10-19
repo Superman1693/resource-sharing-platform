@@ -36,10 +36,11 @@ const submitting = ref(false)
 // 表格列
 const columns = [
   { title: 'ID', dataIndex: 'id', width: 70 },
-  { title: '类型', dataIndex: 'targetType', width: 90, customRender: ({ text }) => typeText[text] || text },
-  { title: '目标ID', dataIndex: 'targetId', width: 90 },
+  { title: '类型', dataIndex: 'targetType', width: 80, customRender: ({ text }) => typeText[text] || text },
+  { title: '被举报内容', key: 'target', width: 240 },
+  { title: '举报人', dataIndex: 'reporterName', width: 110, customRender: ({ text, record }) => text || `用户${record.reporterId}` },
   { title: '举报原因', dataIndex: 'reason', ellipsis: true, customRender: ({ text }) => text || '（未填写）' },
-  { title: '状态', dataIndex: 'status', width: 100 },
+  { title: '状态', dataIndex: 'status', width: 90 },
   { title: '举报时间', dataIndex: 'createTime', width: 170, customRender: ({ text }) => formatDateTime(text) },
   { title: '操作', key: 'action', width: 180, fixed: 'right' },
 ]
@@ -104,9 +105,18 @@ const submitHandle = async () => {
 const viewTarget = (record) => {
   if (record.targetType === 'note') {
     router.push(`/user/noteDetail/${record.targetId}`)
+  } else if (record.targetType === 'comment' && record.targetNoteId) {
+    // 评论没有独立详情页，跳到其所属笔记
+    router.push(`/user/noteDetail/${record.targetNoteId}`)
   } else {
     message.info('该类型暂不支持跳转查看')
   }
+}
+
+/** 被举报内容是否可跳转查看 */
+const canViewTarget = (record) => {
+  if (record.targetType === 'note') return true
+  return record.targetType === 'comment' && !!record.targetNoteId
 }
 
 onMounted(() => {
@@ -139,17 +149,28 @@ onMounted(() => {
       }"
       row-key="id"
       size="middle"
-      :scroll="{ x: 900 }"
+      :scroll="{ x: 1150 }"
     >
       <template #bodyCell="{ column, record }">
-        <template v-if="column.dataIndex === 'status'">
+        <template v-if="column.key === 'target'">
+          <div class="target-cell">
+            <span class="target-title" :title="record.targetTitle">{{ record.targetTitle || '内容已删除' }}</span>
+            <span class="target-id">ID {{ record.targetId }}</span>
+          </div>
+        </template>
+        <template v-else-if="column.dataIndex === 'status'">
           <a-tag :color="statusColor[record.status] || 'default'">
             {{ statusText[record.status] || record.status }}
           </a-tag>
         </template>
         <template v-else-if="column.key === 'action'">
           <a-space>
-            <a-button type="link" size="small" @click="viewTarget(record)">查看</a-button>
+            <a-button
+              type="link"
+              size="small"
+              :disabled="!canViewTarget(record)"
+              @click="viewTarget(record)"
+            >查看</a-button>
             <a-button
               v-if="record.status === 'pending'"
               type="link"
@@ -179,6 +200,12 @@ onMounted(() => {
       <a-form layout="vertical">
         <a-form-item label="举报类型">
           {{ typeText[current?.targetType] || current?.targetType }} · 目标ID {{ current?.targetId }}
+        </a-form-item>
+        <a-form-item label="被举报内容">
+          {{ current?.targetTitle || '内容已删除' }}
+        </a-form-item>
+        <a-form-item label="举报人">
+          {{ current?.reporterName || `用户${current?.reporterId ?? ''}` }}
         </a-form-item>
         <a-form-item label="举报原因">
           {{ current?.reason || '（未填写）' }}
@@ -213,5 +240,22 @@ onMounted(() => {
 }
 .status-tabs {
   margin-bottom: 8px;
+}
+
+/* 被举报内容列：标题 + 目标ID */
+.target-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.target-cell .target-title {
+  color: var(--color-text-primary, #1f2329);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.target-cell .target-id {
+  font-size: 12px;
+  color: var(--color-text-muted, #94a3b8);
 }
 </style>

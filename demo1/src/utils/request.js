@@ -39,6 +39,11 @@ const request = axios.create({
 // 响应拦截器（核心：适配后端业务异常格式）
 request.interceptors.response.use(
   (response) => {
+    // 【修复】二进制响应（如 responseType: 'blob' 的文件下载）不遵循 BaseResponse 契约，
+    // 若继续走 normalizeBaseResponse 会抛「后端响应不符合 BaseResponse 契约」，导致下载必然失败。
+    if (response.config?.responseType === 'blob' || response.data instanceof Blob) {
+      return response
+    }
     const res = normalizeBaseResponse(response.data)
     // 后端统一返回格式：{ code: 0, data: ..., description: '' }
     if (res.code !== API_ERROR_CODES.SUCCESS) {

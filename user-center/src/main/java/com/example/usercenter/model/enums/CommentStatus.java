@@ -1,19 +1,20 @@
 package com.example.usercenter.model.enums;
 
-import com.example.usercenter.common.ErrorCode;
-import com.example.usercenter.exception.BusinessException;
-
-import java.util.Set;
-
 /**
- * 评论状态枚举
+ * 评论状态枚举。
+ *
+ * <p>评论**不再经过人工审核**：发布时只做敏感词过滤（命中即拒绝发布），
+ * 通过校验的评论立即可见。因此只保留「正常 / 已隐藏」两种状态，
+ * 原先的 pending（待审核）、rejected（已拒绝）已废弃。</p>
+ *
  * @author zy
  */
 public enum CommentStatus {
 
-    PENDING("pending", "待审核"),
-    APPROVED("approved", "已通过"),
-    REJECTED("rejected", "已拒绝"),
+    /** 正常可见 */
+    APPROVED("approved", "正常"),
+
+    /** 已隐藏（管理员屏蔽，或因举报被冻结） */
     HIDDEN("hidden", "已隐藏");
 
     private final String code;
@@ -30,22 +31,5 @@ public enum CommentStatus {
 
     public String getDesc() {
         return desc;
-    }
-
-    /**
-     * Controller 层审核接口可接受的状态（approved / rejected）
-     */
-    public static final Set<String> APPROVABLE = Set.of(APPROVED.code, REJECTED.code);
-
-    /**
-     * 根据 code 获取枚举，找不到时抛 BusinessException
-     */
-    public static CommentStatus fromCode(String code) {
-        for (CommentStatus status : values()) {
-            if (status.code.equals(code)) {
-                return status;
-            }
-        }
-        throw new BusinessException(ErrorCode.PARAMS_ERROR, "无效的评论状态: " + code);
     }
 }

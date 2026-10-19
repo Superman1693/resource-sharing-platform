@@ -3,7 +3,7 @@ import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { message as antMessage } from 'ant-design-vue'
 import { UploadOutlined } from '@ant-design/icons-vue'
-import { addResource, uploadResourceFile } from '../../utils/api'
+import { addResource, uploadResourceFile, getPointsQuota } from '../../utils/api'
 import { CATEGORY_OPTIONS, RESOURCE_TYPE_OPTIONS } from '../../utils/constant'
 
 const router = useRouter()
@@ -20,7 +20,27 @@ const formState = reactive({
   downloadUrl: '',
   coverImage: '',
   isPublic: true,
+  // 下载所需积分（0 = 免费）
+  price: 0,
 })
+
+/**
+ * 售价上限由后端按等级下发（GET /points/quota），与笔记售价同规则。
+ * 加载失败时保持 0 并静默 —— 最终仍由后端校验。
+ */
+const priceLimit = ref(0)
+const levelText = ref('')
+getPointsQuota()
+  .then((res) => {
+    const q = res?.data
+    if (!q) return
+    priceLimit.value = Number(q.priceLimit) || 0
+    levelText.value = `Lv.${q.level} ${q.levelName}`
+    if (Number(formState.price) > priceLimit.value) {
+      formState.price = priceLimit.value
+    }
+  })
+  .catch(() => {})
 
 const resourceTypeOptions = RESOURCE_TYPE_OPTIONS
 
@@ -260,6 +280,26 @@ const customRequest = async (options) => {
               style="max-width: 200px; max-height: 150px; object-fit: cover; border-radius: 4px"
             />
           </div>
+        </a-form-item>
+
+        <a-form-item label="下载所需积分（0 = 免费）" name="price">
+          <a-input-number
+            v-model:value="formState.price"
+            :min="0"
+            :max="priceLimit"
+            :step="1"
+            style="width: 180px"
+            placeholder="0 表示免费下载"
+          />
+          <span style="margin-left: 10px; color: #8c8c8c; font-size: 12px">
+            大于 0 时其他用户需消耗积分下载，上传者可得 90%
+            <template v-if="levelText">
+              <br />
+              当前 {{ levelText }}，售价上限 {{ priceLimit }} 积分<span v-if="priceLimit === 0">
+                （提升等级后解锁定价，可通过签到、发布、互动累积积分）</span
+              >
+            </template>
+          </span>
         </a-form-item>
 
         <a-form-item label="公开设置" name="isPublic">

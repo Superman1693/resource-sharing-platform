@@ -33,6 +33,7 @@ const StarManage = () => import('../views/Stars/StarManage.vue')
 const Dashboard = () => import('../views/Admin/Dashboard.vue')
 const ReportManage = () => import('../views/Admin/ReportManage.vue')
 const SensitiveWord = () => import('../views/Admin/SensitiveWord.vue')
+const PointsReconcile = () => import('../views/Admin/PointsReconcile.vue')
 const UserHome = () => import('../views/User/UserHome.vue')
 const ResumeShowcase = () => import('../views/User/ResumeShowcase.vue')
 const AdminUser = () => import('../views/AdminUser.vue')
@@ -73,6 +74,7 @@ const router = createRouter({
         { path: 'dashboard', name: 'Dashboard', component: Dashboard },
         { path: 'reportManage', name: 'ReportManage', component: ReportManage },
         { path: 'sensitiveWord', name: 'SensitiveWord', component: SensitiveWord },
+        { path: 'pointsReconcile', name: 'PointsReconcile', component: PointsReconcile },
         { path: 'contentManage', name: 'ContentManage', component: ContentManage },
         { path: 'contentPublish', name: 'ContentPublish', component: ContentPublish },
         { path: 'noteDetail/:id', name: 'NoteDetail', component: NoteDetail },
@@ -181,7 +183,12 @@ router.beforeEach((to, from, next) => {
   let isBanned = false
 
   try {
-    isAuthenticated = !!userStore.isLogin
+    // 【修复】登录态需同时校验「本地凭证」是否还在：
+    // 接口返回 401 时 request.js 会清空 localStorage 中的 token，但 Pinia 内存态
+    // isLogin 仍为 true。若只信 isLogin，用户会被从登录页弹回首页，
+    // 且界面显示"已登录"却无凭证 → 后续请求全部 401，反复跳转。
+    const hasAuthStorage = !!localStorage.getItem('userLogin') || !!localStorage.getItem('token')
+    isAuthenticated = !!userStore.isLogin && hasAuthStorage
     isAdmin = Number(userStore.userRole || 0) === 1
     isBanned = Number(userStore.userStatus || 0) === 1
   } catch (e) {

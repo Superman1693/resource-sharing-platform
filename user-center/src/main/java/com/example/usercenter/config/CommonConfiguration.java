@@ -9,6 +9,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 @Configuration
 public class CommonConfiguration {
 
@@ -16,6 +19,22 @@ public class CommonConfiguration {
     @Bean
     public ChatMemory chatMemory() {
         return new InMemoryChatMemory();
+    }
+
+    /**
+     * AI 调用专用线程池（用于给「非流式」AI 调用加超时）。
+     *
+     * <p>Spring AI 的 {@code call().content()} 是阻塞调用，上游（如 DashScope）挂起时会
+     * 长期占用 Tomcat 工作线程，少量并发即可把线程池打满。放到独立线程池并用
+     * {@code get(timeout)} 取结果后，超时即释放，不再拖垮 Web 容器。</p>
+     */
+    @Bean("aiCallExecutor")
+    public ExecutorService aiCallExecutor() {
+        return Executors.newFixedThreadPool(8, r -> {
+            Thread t = new Thread(r, "ai-call");
+            t.setDaemon(true);
+            return t;
+        });
     }
 
     @Bean

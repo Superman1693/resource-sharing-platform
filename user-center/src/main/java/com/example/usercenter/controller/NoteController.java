@@ -20,6 +20,7 @@ import com.example.usercenter.mapper.StarMemberMapper;
 import com.example.usercenter.service.HotRankService;
 import com.example.usercenter.service.NotificationService;
 import com.example.usercenter.service.NoteService;
+import com.example.usercenter.service.PointsService;
 import com.example.usercenter.service.ReportService;
 import com.example.usercenter.service.UserService;
 import com.example.usercenter.utils.UserContext;
@@ -65,6 +66,9 @@ public class NoteController extends BaseController {
     @Resource
     private ReportService reportService;
 
+    @Resource
+    private PointsService pointsService;
+
     /**
      * 获取笔记列表（免登录浏览）
      */
@@ -86,7 +90,9 @@ public class NoteController extends BaseController {
     }
 
     /**
-     * 获取笔记详情（免登录浏览；非作者非管理员访问非 published 笔记会被 NoteService 拦截）
+     * 获取笔记详情（免登录浏览）
+     * <p>published 内容走多级缓存；非 published（draft / pending / rejected）仅对**作者本人与管理员**放行，
+     * 其他登录用户与匿名访客一律按「笔记不存在」处理。作者编辑回填另有 {@code GET /note/my/{id}}。
      */
     @GetMapping("/{id}")
     public BaseResponse<Note> getNoteDetail(@PathVariable Long id, HttpServletRequest request) {
@@ -103,8 +109,20 @@ public class NoteController extends BaseController {
         Long userId = loginUser == null ? null : loginUser.getUserId();
         boolean isAdmin = loginUser != null && Integer.valueOf(1).equals(loginUser.getUserRole());
 
-        // 走多级缓存（published only，非 published 抛 NOT_FOUND；作者编辑 draft 走 /note/my/{id}）
-        Note note = noteService.getNoteDetailPublished(id);
+        // published 内容走多级缓存（全员共享）。
+        // 命中不到时不再直接抛错：笔记被举报后会被 markNotePending 置为 pending，
+        // 此时「举报管理 → 查看」必须仍能打开它，否则管理员无法查看被举报内容、无从判断是否违规；
+        // 作者也应能查看自己被打回的内容。故回退到带身份校验的 getNoteDetail，
+        // 由它决定放行（作者/管理员）还是照旧抛「笔记不存在」（其他登录用户 / 匿名访客）。
+        Note note;
+        try {
+            note = noteService.getNoteDetailPublished(id);
+        } catch (BusinessException e) {
+            if (userId == null) {
+                throw e;   // 匿名访客：维持原行为，不暴露 draft/pending/rejected 的存在
+            }
+            note = noteService.getNoteDetail(id, userId, isAdmin);
+        }
 
         // 增加浏览量
         noteService.increaseViewCount(id);
@@ -132,6 +150,25 @@ public class NoteController extends BaseController {
                     masked.setLocked(true);
                     return ResultUtils.success(masked);
                 }
+            }
+        }
+
+        // 付费笔记门禁：未解锁的用户只能看到摘要，正文置空并标记 locked，
+        // 前端据此显示「解锁需 N 积分」的遮罩（复用星球内容的遮罩样式）。
+        if (note.getPrice() != null && note.getPrice() > 0) {
+            boolean canRead = false;
+            if (loginUser != null) {
+                Long uid = loginUser.getUserId();
+                canRead = isAdmin
+                        || Objects.equals(note.getAuthorId(), uid)
+                        || pointsService.hasUnlocked(uid, id);
+            }
+            if (!canRead) {
+                Note masked = new Note();
+                BeanUtils.copyProperties(note, masked);
+                masked.setContent(null);
+                masked.setLocked(true);
+                return ResultUtils.success(masked);
             }
         }
 
@@ -279,6 +316,61 @@ public class NoteController extends BaseController {
     /**
      * 举报笔记（进入待审核状态，需要登录）
      */
+    /**
+     * 用积分自助置顶自己的笔记（消耗固定积分，置顶 24 小时后自动下架）
+     */
+    @PostMapping("/boost/{id}")
+    @LoginRequired
+    @PreventDuplicate(waitTime = 0, leaseTime = 5, message = "操作过于频繁，请稍后再试")
+    public BaseResponse<Boolean> boostNote(@PathVariable Long id, HttpServletRequest request) {
+        if (id == null || id <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记ID不能为空");
+        }
+        Long userId = getLoginUser().getUserId();
+        return ResultUtils.success(noteService.boostNote(id, userId));
+    }
+
+    /**
+     * 用积分解锁付费笔记（免费 / 作者本人 / 已购买均直接成功，幂等）
+     */
+    @PostMapping("/unlock/{id}")
+    @LoginRequired
+    @PreventDuplicate(waitTime = 0, leaseTime = 5, message = "操作过于频繁，请稍后再试")
+    public BaseResponse<Boolean> unlockNote(@PathVariable Long id, HttpServletRequest request) {
+        if (id == null || id <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记ID不能为空");
+        }
+        Long userId = getLoginUser().getUserId();
+        return ResultUtils.success(pointsService.unlockNote(userId, id));
+    }
+
+    /**
+     * 打赏笔记作者（可重复，单次 1 ~ 500 积分）
+     */
+    @PostMapping("/tip/{id}")
+    @LoginRequired
+    @PreventDuplicate(waitTime = 0, leaseTime = 5, message = "操作过于频繁，请稍后再试")
+    public BaseResponse<Boolean> tipNote(@PathVariable Long id,
+                                         @RequestBody(required = false) Map<String, Object> body,
+                                         HttpServletRequest request) {
+        if (id == null || id <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记ID不能为空");
+        }
+        int amount = 0;
+        if (body != null && body.get("amount") != null) {
+            try {
+                amount = Integer.parseInt(String.valueOf(body.get("amount")).trim());
+            } catch (NumberFormatException e) {
+                throw new BusinessException(ErrorCode.PARAMS_ERROR, "打赏金额不合法");
+            }
+        }
+        if (amount <= 0) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "打赏金额不合法");
+        }
+        Long userId = getLoginUser().getUserId();
+        return ResultUtils.success(pointsService.tipNote(userId, id, amount));
+    }
+
     @PostMapping("/report/{id}")
     @LoginRequired
     @PreventDuplicate(waitTime = 0, leaseTime = 5, message = "操作过于频繁，请稍后再试")

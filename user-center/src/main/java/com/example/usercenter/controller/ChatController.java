@@ -40,6 +40,7 @@ public class ChatController {
 
     @PostMapping("/message")
     @Operation(summary = "发送聊天消息")
+    @RateLimit(key = "chat_message", windowSeconds = 60, maxRequests = 20)
     public BaseResponse<ChatMessage> sendMessage(
             @Valid @RequestBody ChatRequest chatRequest,
             HttpServletRequest request) {

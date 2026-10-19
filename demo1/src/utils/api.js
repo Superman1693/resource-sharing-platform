@@ -49,6 +49,18 @@ export const getNoteList = (params) =>
 export const getNoteDetail = (id) =>
   request.get(`/note/${id}`)
 
+// 10.1) 用积分解锁付费笔记（幂等：免费/作者本人/已解锁直接成功）
+export const unlockNote = (id) =>
+  request.post(`/note/unlock/${Number(id)}`)
+
+// 10.2) 打赏笔记作者（amount：打赏积分，1 ~ 500）
+export const tipNote = (id, amount) =>
+  request.post(`/note/tip/${Number(id)}`, { amount })
+
+// 10.3) 用积分自助置顶笔记（消耗固定积分，置顶 24 小时后自动下架）
+export const boostNote = (id) =>
+  request.post(`/note/boost/${Number(id)}`)
+
 // 11) 发布/创建笔记/内容
 export const createNote = (body) =>
   request.post('/note/add', body)
@@ -107,9 +119,9 @@ export const deleteComment = (id) =>
     headers: { 'Content-Type': 'application/json' }
   })
 
-// 19) 审核评论（管理员）
-export const approveComment = (id, status) =>
-  request.post('/comment/approve', {
+// 19) 设置评论可见状态（管理员）—— 评论不再审核，仅用于屏蔽 / 恢复
+export const setCommentStatus = (id, status) =>
+  request.post('/comment/status', {
     id: Number(id),
     status
   }, {
@@ -592,6 +604,14 @@ export const getSignCalendar = (params) =>
 // 积分回填（管理员：按贡献值初始化现有用户 balance，幂等）
 export const migratePoints = () =>
   request.post('/points/migrate')
+
+// 我的积分额度（等级 / 售价上限 / 今日获取剩余）
+export const getPointsQuota = () =>
+  request.get('/points/quota')
+
+// 积分对账总览（管理员）：发放 / 消耗 / 平台抽成 / 榜单
+export const getPointsReconcile = (params) =>
+  request.get('/points/reconcile', { params })
 
 // ========== 举报管理 API（管理员） ==========
 // 举报列表（status 可选：pending/resolved/ignored）

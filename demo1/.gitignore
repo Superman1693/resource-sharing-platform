@@ -10,6 +10,8 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+# 本地构建校验产物（`vite build --outDir dist_verify`），不进版本库
+dist_verify
 *.local
 
 # Editor directories and files

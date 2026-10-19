@@ -157,4 +157,10 @@ public class Note {
     /** 是否置顶 0-否 1-是 */
     private Integer isTop;
 
+    /** 自助置顶到期时间（NULL = 不过期，通常为管理员手动置顶） */
+    private Date topUntil;
+
+    /** 解锁所需积分：0 = 免费（公开可读） */
+    private Integer price;
+
 }

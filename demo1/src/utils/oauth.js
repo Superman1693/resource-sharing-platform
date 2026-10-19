@@ -42,6 +42,21 @@ export const validateOAuthState = (state, provider = 'github') => {
 }
 
 /**
+ * 根据回调里的 state 反查是哪个渠道发起的授权。
+ *
+ * 两个渠道都是整页跳转（同标签页），sessionStorage 仍然可读。
+ * 用它替代原先「用 state 值猜 provider」的做法（QQ 现在也使用随机 state）。
+ *
+ * @returns {'github' | 'qq' | null}
+ */
+export const resolveOAuthProvider = (state) => {
+  if (!state) return null
+  if (sessionStorage.getItem('github_oauth_state') === state) return 'github'
+  if (sessionStorage.getItem('qq_oauth_state') === state) return 'qq'
+  return null
+}
+
+/**
  * 从 URL 中提取 OAuth 授权码
  */
 export const extractOAuthCode = () => {
@@ -73,10 +88,12 @@ export const redirectToGithub = async () => {
 /**
  * 跳转到 QQ 授权页面
  *
- * 注意：QQ 互联的授权地址由后端拼好，并固定使用 state=qq_login
- * （回调页据此识别 QQ 来源，因此该分支不做随机 state 校验）。
+ * 【修复】原先 QQ 分支使用后端硬编码的 state=qq_login，回调页据此识别来源，
+ * 等于没有 CSRF 防护（攻击者可用自己的 code 诱导受害者在浏览器完成登录）。
+ * 现在与 GitHub 分支对齐：生成随机 state 存入 sessionStorage，回调页强制校验。
  */
 export const redirectToQQ = async () => {
   const url = await getQQOAuthUrl()
-  window.location.href = url
+  const state = generateState('qq')
+  window.location.href = `${url}&state=${encodeURIComponent(state)}`
 }

@@ -12,6 +12,7 @@ import com.example.usercenter.model.domain.Resource;
 import com.example.usercenter.utils.SensitiveWordChecker;
 import com.example.usercenter.model.domain.User;
 import com.example.usercenter.service.EsSearchService;
+import com.example.usercenter.service.PointsService;
 import com.example.usercenter.service.ResourceService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -46,6 +47,29 @@ public class ResourceServiceImpl extends ServiceImpl<ResourceMapper, Resource> i
 
     @Autowired
     private EsSearchService esSearchService;
+
+    @Autowired
+    private PointsService pointsService;
+
+    /**
+     * 校验并归一化资源售价：null / 负数 → 0（免费），超过「当前等级售价上限」抛异常。
+     *
+     * <p>上限不再是写死的 200，而是按用户等级（累计获得积分）动态给出，与笔记售价同规则。
+     * 原先的 {@code Math.min(price, 200)} 是静默截断 —— 用户填 200 实际只生效 50 时毫无提示，
+     * 改为直接报错更明确。</p>
+     */
+    private int normalizePrice(Integer price, Long userId) {
+        if (price == null || price < 0) {
+            return 0;
+        }
+        int limit = pointsService.getPriceLimit(userId);
+        if (price > limit) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, limit <= 0
+                    ? "当前等级暂不能设置售价，可通过签到、发布、互动累积积分提升等级"
+                    : "当前等级售价上限为 " + limit + " 积分，提升等级可获得更高上限");
+        }
+        return price;
+    }
 
     @Autowired
     private SensitiveWordChecker sensitiveWordChecker;
@@ -153,7 +177,13 @@ public class ResourceServiceImpl extends ServiceImpl<ResourceMapper, Resource> i
             resource.setName(resource.getTitle());
         }
         resource.setDownloadCount(0);
-        resource.setStatus(StringUtils.isBlank(resource.getStatus()) ? "pending" : resource.getStatus());
+        // 下载所需积分（0 = 免费，负数归零；上限按用户等级动态给出）
+        Integer price = resource.getPrice();
+        resource.setPrice(normalizePrice(price, loginUser.getId()));
+        // 【安全修复】新增资源一律进入待审核（pending），不接受客户端传入的 status。
+        // 原实现为 `isBlank(status) ? "pending" : status`，等于允许调用方直接传
+        // status=enabled 自行上架，绕过 pending → enabled 的审核流程。
+        resource.setStatus("pending");
         resource.setIsPublic(resource.getIsPublic() != null ? resource.getIsPublic() : true);
         // 记录上传者归属（用于"我的资源"查询与统计）
         resource.setUploaderId(loginUser.getId());

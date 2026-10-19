@@ -44,6 +44,13 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+        // 【防御性清理】Tomcat 复用线程时，若上一个请求的 preHandle 返回了 false，
+        // Spring 不会回调本拦截器的 afterCompletion（applyPreHandle 中 interceptorIndex
+        // 尚未推进到本拦截器，triggerAfterCompletion 只回溯到上一个），
+        // 残留身份会被本请求继承 → 匿名请求被当成已登录用户。
+        // 因此每次进入先清一次，保证本请求的身份只能来自本请求携带的 token。
+        UserContext.clear();
+
         if (!(handler instanceof HandlerMethod method)) return true;
 
         boolean needLogin = method.hasMethodAnnotation(LoginRequired.class)
@@ -76,6 +83,9 @@ public class AuthInterceptor implements HandlerInterceptor {
 
         // 需要管理员但角色不符，拒绝访问
         if (needAdmin && !Integer.valueOf(1).equals(UserContext.get().getUserRole())) {
+            // 同样必须显式清理：本分支 return false 后 afterCompletion 不会执行，
+            // 否则该用户身份会残留到下一个复用此线程的请求。
+            UserContext.clear();
             writeError(response, ErrorCode.NO_AUTH);
             return false;
         }

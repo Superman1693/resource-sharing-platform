@@ -31,12 +31,41 @@ export const exportAsPrintableHTML = async (notes) => {
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const win = window.open(url, '_blank')
-  if (win) {
-    // 等待文档与图片渲染完成后再弹出打印，避免内容截断
-    win.onload = () => {
-      setTimeout(() => win.print(), 300)
+  if (!win) {
+    URL.revokeObjectURL(url)
+    throw new Error('浏览器阻止了弹出窗口，请允许本站弹窗后重试')
+  }
+
+  // 等待文档与图片渲染完成再唤起打印，避免内容截断。
+  // ⚠️ blob 文档可能在 window.open 返回之前就加载完毕，导致 onload 被错过、
+  // 用户看到文档却不会自动弹出打印框。因此用「onload + 轮询兜底」双保险，
+  // 并用 printed 标记保证只触发一次。
+  let printed = false
+  const doPrint = () => {
+    if (printed || win.closed) return
+    printed = true
+    try {
+      win.focus()
+      win.print()
+    } catch (e) {
+      // 用户可能已手动关闭窗口，忽略
     }
   }
+  win.onload = () => setTimeout(doPrint, 300)
+
+  let ticks = 0
+  const timer = setInterval(() => {
+    ticks += 1
+    if (win.closed || ticks > 25) { // 最长等 5 秒
+      clearInterval(timer)
+      return
+    }
+    if (win.document && win.document.readyState === 'complete') {
+      clearInterval(timer)
+      setTimeout(doPrint, 300)
+    }
+  }, 200)
+
   setTimeout(() => URL.revokeObjectURL(url), 60000)
 }
 

@@ -140,4 +140,12 @@ public interface NoteService extends IService<Note> {
      * @param id 笔记ID
      */
     boolean markNotePending(Long id);
+
+    /**
+     * 用积分自助置顶笔记。
+     *
+     * <p>消耗 {@code PointsService.BOOST_COST} 积分，置顶 {@code PointsService.BOOST_HOURS} 小时；
+     * 到期后由定时任务自动取消置顶。仅作者本人可置顶自己的已发布笔记。</p>
+     */
+    boolean boostNote(Long id, Long userId);
 }

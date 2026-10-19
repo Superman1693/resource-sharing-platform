@@ -14,10 +14,12 @@
 | | [requirements.md](01-overview/requirements.md) | 需求规格与验收标准（P0–P2 共 19 项） |
 | **架构与性能** | [multi-level-cache.md](02-architecture/multi-level-cache.md) | 多级缓存（Caffeine L1 + Redis L2）使用指南 |
 | | [distributed-lock-usage.md](02-architecture/distributed-lock-usage.md) | Redisson 分布式锁 / 防重复提交使用指南 |
+| | [points-system-design.md](02-architecture/points-system-design.md) | **积分体系使用方案**：现状盘点、5 个消耗出口（解锁/打赏/置顶/资源/星球）、等级体系与防滥用 |
 | **接口文档** | [api-reference.md](03-api/api-reference.md) | RESTful 接口文档：第一~十二章为 35 个接口的请求/响应详解，**第十三章为全量 142 个接口清单**（分 23 个模块） |
 | | [chat-api.md](03-api/chat-api.md) | AI 聊天接口文档（JWT 认证版） |
 | **组件指南** | [vditor-editor-usage.md](04-guides/vditor-editor-usage.md) | Vditor Markdown 编辑器组件使用指南 |
 | **更新日志** | [ai-chat-fixes.md](05-changelog/ai-chat-fixes.md) | AI 聊天组件流式渲染 / 拖拽修复说明 |
+| | [2026-10-16-bug-audit.md](05-changelog/2026-10-16-bug-audit.md) | **全项目潜在 Bug 审计报告**：P0/P1/P2 共 9 项缺陷的成因、影响范围与最小修复方案（含端到端验证） |
 | **数据库** | [`db/schema.sql`](../db/schema.sql) | 数据库完整快照（26 张表 + 索引 + 初始化数据 + 增量升级），供查阅与手工建库 |
 | | [`user-center/.../db/migration/`](../user-center/src/main/resources/db/migration/) | **Flyway 版本化迁移**（`V1` 基线 + `V2` 多租户作用域/错误日志），应用的机械权威 |
 
@@ -196,6 +198,72 @@ README.md（项目入口 / 功能清单）
 | **后端实现要点** | ①按「是否含 `@`」分流校验（原账号规则会把 `@`/`.` 判为非法，不分流则邮箱永远登不进）；②查询条件 `WHERE (user_account = ? OR email = ?)`；③**用「密码匹配」而非「唯一命中」确定用户**——`user.email` 无唯一索引且存在多账号共用邮箱的历史数据，`selectOne` 会抛 `TooManyResultsException`，取第一条又会误登他人账号；④抽出 `matchesPassword()` 复用 BCrypt/MD5 兼容与自动升级逻辑 |
 | **关键坑** | 给入参 `loginId` 重新赋值后再在 lambda 中使用 → 编译报「从 lambda 表达式引用的本地变量必须是最终变量」。改用新局部变量 `loginKey` 承载 `trim()` 结果 |
 | **实测（2026-09-21）** | 邮箱登录 ✅ / 用户名登录无回归 ✅ / 未注册邮箱返回统一错误（不泄露账号是否存在）✅ / 重复邮箱 + 错误密码返回业务错误而非 500 ✅ / 非法账号与非法邮箱格式均被拦下 ✅；**两账号共用同一邮箱、密码不同 → 各自密码分别登进正确账号（id15 / id16）** ✅；前端 `vite build` EXIT=0，后端 `./mvnw compile` EXIT=0；测试账号已清理（用户数回到 14） |
+
+**第八轮（修复举报功能的三处缺陷）**
+
+> 现象：①用户举报时没有地方填写理由，管理端却显示「（未填写）」；②管理端点「查看」报「笔记不存在」。
+
+| 项 | 内容 |
+|------|------|
+| **缺陷 1：举报理由无处填写** | `NoteDetail.vue` 的举报笔记用 `Modal.confirm`（只有一个确认按钮、不传 `reason`）→ 落库为 NULL；举报评论更是**硬编码** `reason: '用户举报'` → 管理端显示假理由 |
+| **缺陷 2：「查看」报笔记不存在** | `NoteController` 的公开详情端点已经算好了 `userId` / `isAdmin`，却**弃之不用**，只调 `getNoteDetailPublished(id)`（published-only）。而举报会把笔记 `markNotePending` 成 `pending` → **管理员恰恰打不开自己最需要看的被举报内容**，`getNoteDetail(id,userId,isAdmin)` 成了死代码 |
+| **缺陷 3：管理端无法辨识目标** | 列表只有 `targetId` / `reporterId`，看不出被举报的是什么；评论类型点「查看」还提示「暂不支持跳转查看」 |
+| **修复 1** | 新增举报弹窗：6 个预设理由 + 选填补充说明（选「其他」时说明必填），笔记与评论共用同一弹窗；拼接规则 `预设项：补充说明`，限长 200 字 |
+| **修复 2** | `GET /note/{id}` 改为「published 缓存命中不到时，对作者/管理员回退到 `getNoteDetail(id, userId, isAdmin)`」；**匿名访客与其他登录用户维持原行为**，不泄露 draft/pending/rejected 的存在 |
+| **修复 3** | `Report` 实体加三个 `@TableField(exist = false)` 派生字段（`reporterName` / `targetTitle` / `targetNoteId`），`ReportServiceImpl.list` 按类型聚合 ID 后 `selectBatchIds` 批量填充（避免 N+1）；管理端表格补「举报人」「被举报内容」两列，评论类型改为跳转其所属笔记 |
+| **端到端实测** | 匿名访问 pending 笔记 → 仍「笔记不存在」✅；普通登录用户（非作者非管理员）→ 仍「笔记不存在」✅；**管理员 → 正常打开（状态 pending）** ✅；带理由举报笔记与评论后，`/report/list` 正确显示 `原因=垃圾广告或推广内容：…`、`举报人=举报测试号`、`被举报内容=…`、评论型还带 `评论所属笔记=25` ✅ |
+| **验证** | 后端 `./mvnw -q compile` EXIT=0；前端 `vite build` EXIT=0。测试数据（笔记/评论/举报/通知/积分/标签/测试账号）已全部清理，库状态与测试前一致 |
+
+**第九轮（全项目潜在 Bug 审计与修复）**
+
+> 范围：五路并行审计（认证授权与多租户 / 内容域 / 资源上传 / AI·通知·积分 / 前端）。
+> 完整报告见 [05-changelog/2026-10-16-bug-audit.md](05-changelog/2026-10-16-bug-audit.md)。
+
+| 项 | 内容 |
+|------|------|
+| **P0 认证绕过** | `AuthInterceptor.preHandle` 中 `return false` 时**不会**触发本拦截器自身的 `afterCompletion`（Spring `applyPreHandle` 的 `interceptorIndex` 只回溯到上一个成功的拦截器）→ `UserContext` 身份残留，被下一个复用该线程的请求（可能匿名）继承。修复：`preHandle` 开头无条件 `clear()` + 两处 `return false` 前显式 `clear()` |
+| **P0 多租户写入越权** | `createNote` 不校验请求体 `starId` 的成员归属，任意登录用户可向任意星球写入内容 |
+| **P0 审核绕过** | `addResource` 原为 `isBlank(status) ? "pending" : status`，客户端可自传 `enabled` 直接上架。修复：强制 `pending` |
+| **P0 AI 会话越权** | `resolveSessionId` 直接返回客户端传入的 `sessionId` 不校验归属（读路径有校验，写路径漏了）→ 可写入并借 AI 记忆读取他人对话 |
+| **P1 状态机 + 刷分** | `updateNote` 只拦 `rejected → published`，**漏拦 `pending → published`**（举报置 pending 后作者可自行恢复，绕过审核）；`publishSideEffects` 注释称"仅首次发布"但**无幂等判断**，`published ↔ draft` 可无限重复发 +20 积分、重复累加星球内容计数。修复：状态拦截 + 以 `points_log` 是否已有该笔记 `publish` 记录做幂等 |
+| **P1 评论计数失真** | `replyComment` 不计入、`deleteComment` 不递减 `note.comment_count`（全仓无递减逻辑）。修复：补计入 + 新增 `NoteMapper.decrementCommentCount`（`GREATEST` 防负） |
+| **P1 举报忽略后内容消失** | `ReportServiceImpl.handle` 只改 `report` 行、不联动笔记 → 被误举报的内容永久停留 `pending`。修复：`ignored` 时调 `noteService.approveNote()` |
+| **P1 前端登录态不一致** | 401 只清 localStorage，Pinia `isLogin` 内存态未重置 → 守卫把用户从 `/login` 弹回首页并反复 401。修复：登录态以本地凭证为准 |
+| **P2 blob 下载必失败** | `request.js` 对所有响应跑 `normalizeBaseResponse`（要求 `typeof code === 'number'`），blob 无 `.code` 必抛错。修复：blob 直通 |
+| **验证** | `mvnw compile` EXIT=0；`vite build` EXIT=0；8081 独立实例端到端 6 组用例全部通过（30 次匿名请求 0 泄漏、审核绕过被堵、积分恰好 1 条、评论计数 1→0） |
+
+**第十轮（积分闭环 + 移除评论审核）**
+
+| 项 | 内容 |
+|------|------|
+| **积分闭环** | 此前积分**只增不减**（签到/发布/被赞/评论都有获取，没有任何消耗出口）。本轮落地两条消耗链路：①**付费笔记解锁**——新增 `note.price` 列与 `note_purchase` 表（唯一键 `user_id+note_id` 幂等），`PointsService#unlockNote` 原子扣减、作者得 90%；②**打赏作者**——新增 `note_tip` 表，单次 1~500、禁止自赏，作者得 90%；③**等级体系**——前端按 `total_earned` 定级（消费不掉级），个人主页展示 `Lv.N` 与升级进度；④**防滥用**——`likeNote` 排除作者本人（自赞不再 +2 积分） |
+| **移除评论审核** | 评论原先前台发布即 `pending`，须管理员逐条放行；且回复走 `approved`、主评论走 `pending`，两处本身就不一致。现改为**只做敏感词过滤**：命中即拒绝发布（复用 `sensitiveWordChecker.check`），通过即可见。删除 `approveComment` 接口与实现、`resolveModerationStatus`、硬编码 `SENSITIVE_WORDS`；`CommentStatus` 精简为 `APPROVED`/`HIDDEN`；管理端「通过」按钮改为「屏蔽 / 恢复」（`POST /comment/status` 替代 `/comment/approve`）。历史 `pending`/`rejected` 数据由 V3 统一置为 `approved` |
+| **数据迁移** | `V3__remove_comment_moderation_and_add_points_spend.sql`：新增 `note.price`、`note_purchase`、`note_tip`，并调整 `comment.status` 的默认值与注释、放行历史待审数据 |
+| **验证** | Flyway `v2 → v3` 成功执行；`mvnw compile` / `vite build` 均 EXIT=0；8081 端到端：付费笔记「未解锁遮蔽 → 积分不足拒绝 → 解锁后可见」、解锁扣 5 作者得 4、打赏扣 10 作者得 9、自赏与越界被拒、**评论发布后匿名立即可见**、含敏感词评论**直接拒绝**（不再转 hidden） |
+
+**第十一轮（积分消耗 P2 / P3）**
+
+| 项 | 内容 |
+|------|------|
+| **P2-1 自助置顶** | 新增 `note.top_until`；`POST /note/boost/{id}` 消耗 **50 积分**置顶 **24 小时**，仅作者本人可置顶自己的已发布笔记；新增定时任务 `ExpireTopNoteTask`（每 10 分钟）批量清理到期置顶并清 `noteList` 缓存。与管理员置顶的区别：管理员置顶不带 `top_until`，不会自动过期 |
+| **P2-2 资源付费下载** | 新增 `resource.price` 与 `resource_download`（唯一键 `user_id+resource_id`）。`PointsService#unlockResource` 统一处理免费/付费：付费先扣分（上传者得 90%），**首次产生记录时才 `download_count +1`** —— 顺带修掉「刷新下载接口即可无限刷计数」的既有缺陷。下载接口改为需登录（匿名仅可下免费资源且不计数） |
+| **P3 创建星球门槛** | `POST /star/create` 增加积分门槛：消耗 **500 积分**（`PointsService#CREATE_STAR_COST`）；配合方法上已有的 `@Transactional`，余额不足不会留下半成品星球 |
+| **前端** | 笔记详情页新增「置顶 / 续期置顶」按钮（作者可见，二次确认）；发布页与资源上传页新增售价输入；资源详情页显示「需 N 积分 / 免费」标签，付费下载前二次确认；创建星球入口提示门槛 |
+| **验证** | Flyway `v3 → v4` 成功；`mvnw compile` / `vite build` 均 EXIT=0；8081 端到端：置顶后 `is_top=1` 且 `top_until` 为 24 小时后、「模拟到期 + 执行同款 UPDATE」归零成功（`is_top=0, top_until=NULL`）、资源下载两次**仅计 1 次**且扣 10/上传者得 9、余额 90 时创建星球被拒（还差 410 分）、充值 600 后创建成功并扣 500 |
+
+---
+
+**第十二轮（积分额度与平台对账：每日上限 / 售价上限随等级 / 对账视图）**
+
+| 项 | 内容 |
+|------|------|
+| **每日获取上限** | `PointsService.DAILY_EARN_LIMIT = 200`，在 `addPointsInternal` 统一拦截：仅约束**平台发放**类型（`sign`/`publish`/`like`/`comment`），超出按剩余额度**截断**并在 `remark` 标注「今日获取上限，实发 N 分」；额度用尽则**不写流水**。**用户间转移（`unlock_income`/`tip_income`/`resource_income`）不计入、不受限** —— 那是别人花掉的积分转过来，限流会让作者收不到报酬 |
+| **售价上限随等级** | 新增后端权威枚举 `model/enums/PointsLevel.java`（L1 新手 0 / L2 活跃 50 / L3 贡献 100 / L4 资深 200 / L5 核心 500，按 `total_earned` 定级）。`NoteServiceImpl#normalizeNotePrice` 与 `ResourceServiceImpl#normalizePrice` 改为按 `pointsService.getPriceLimit(userId)` 校验；资源由原来的静默 `Math.min(price, 200)` **改为直接报错**（填 200 实际只生效 50 却无提示）。前端 `pointsLevel.js` 阈值与枚举对齐，发布页按 `GET /points/quota` 渲染提示 |
+| **对账视图** | `GET /points/reconcile?days=30`（`@AdminRequired`）：总览（账户数 / 未消费存量 / 累计发放 / 累计消耗 / 平台抽成 / 成交单数 / 今日已发放）、抽成**分渠道**、近 N 天趋势（发放·消耗·抽成合并到同一日期轴）、收入榜、消费榜。管理端新页 `Admin/PointsReconcile.vue`，图表用**纯 CSS 条形图**（未引入 ECharts）。抽成由三张成交表反推 `SUM(成交额 − 收款方实得)` |
+| **额度接口** | `GET /points/quota` 返回 `level / levelName / priceLimit / totalEarned / balance / nextLevel... / dailyEarnLimit / todayEarned / todayRemain`，发布页与个人主页共用 |
+| **迁移 V5** | 补 4 个 `idx_create_time`（`points_log` / `note_purchase` / `note_tip` / `resource_download`）—— 对账只按时间过滤，原索引均以 `user_id` / `note_id` 为前缀命不中 |
+| **踩坑（两个）** | ① **`change` 是 MySQL 保留字**：`QueryWrapper.gt("change", 0)` 拼出 `change > 0` 直接语法错误，而它发生在 `addPoints` 的 `try/catch` 里 → **所有积分发放静默失效**（笔记照发、积分不发，日志只有一行 `WARN 加分失败`）。已改用 `` gt("`change`", 0) ``，并把 catch 改为传 Throwable 打完整堆栈。② **`only_full_group_by`**：SELECT 与 GROUP BY 的分组表达式必须完全一致，`DATE_FORMAT(create_time,...)` 不能配 `GROUP BY DATE(create_time)` |
+| **验证** | Flyway `v4 → v5` 成功；`mvnw compile` / `vite build` 均 EXIT=0；8081 端到端：L1 定价被拒 → 提到 L2 后上限 50（50 通过 / 51 拒绝）→ 资源同规则；解锁+打赏+下载后**抽成 11、成交 3 单**且分渠道 5/1/5 正确；剩余 1 分时签到（本应发 6）**实发 1 分**、额度满后发评论**不写流水**；A 的 `todayEarned=40` 而 `balance=139` → **income 不占额度** |
 
 ---
 

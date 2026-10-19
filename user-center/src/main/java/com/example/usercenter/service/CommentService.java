@@ -33,9 +33,14 @@ public interface CommentService extends IService<Comment> {
     boolean deleteComment(Long id, HttpServletRequest request);
 
     /**
-     * 审核评论（管理员）
+     * 设置评论可见状态（管理员）。
+     *
+     * <p>评论已无「审核」概念（发布时仅做敏感词过滤，通过即可见），
+     * 此接口只用于屏蔽违规评论或恢复被举报冻结的评论。</p>
+     *
+     * @param status {@code approved}=正常，{@code hidden}=已屏蔽
      */
-    boolean approveComment(Long id, String status, HttpServletRequest request);
+    boolean setCommentStatus(Long id, String status, HttpServletRequest request);
 
     /**
      * 点赞评论

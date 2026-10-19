@@ -36,12 +36,21 @@ const openCreateModal = () => {
     router.push({ path: '/login', query: { redirect: '/user/starList' } })
     return
   }
-  createForm.name = ''
-  createForm.description = ''
-  createForm.coverImage = ''
-  createForm.isPaid = false
-  createForm.price = 99
-  showCreateModal.value = true
+  // 【积分门槛】创建星球会消耗后端 PointsService.CREATE_STAR_COST（500）积分，先二次确认
+  Modal.confirm({
+    title: '创建星球',
+    content: '创建星球需消耗 500 积分（余额不足将无法创建）。是否继续？',
+    okText: '继续创建',
+    cancelText: '再想想',
+    onOk: () => {
+      createForm.name = ''
+      createForm.description = ''
+      createForm.coverImage = ''
+      createForm.isPaid = false
+      createForm.price = 99
+      showCreateModal.value = true
+    },
+  })
 }
 
 // 封面上传（自定义请求，走通用图片上传接口）

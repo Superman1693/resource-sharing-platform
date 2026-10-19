@@ -17,7 +17,9 @@ import com.example.usercenter.service.CollectionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -34,6 +36,7 @@ public class CollectionServiceImpl extends ServiceImpl<NoteCollectionMapper, Not
     private final UserMapper userMapper;
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public boolean toggleCollect(Long userId, Long noteId) {
         if (noteId == null || noteId <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "笔记ID非法");
@@ -42,20 +45,25 @@ public class CollectionServiceImpl extends ServiceImpl<NoteCollectionMapper, Not
         if (note == null || !"published".equals(note.getStatus())) {
             throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "笔记不存在或已下架");
         }
-        boolean exists = this.count(new LambdaQueryWrapper<NoteCollection>()
+        // 【修复】原实现是「先 count 再 save」的 check-then-act：并发下两个请求都会
+        // 判定为"未收藏"，随后双双 save，其中一方撞唯一约束 uk_user_note → 500。
+        // 改为「先删后插」的等价语义，并捕获唯一键冲突按幂等处理。
+        boolean removed = this.remove(new LambdaQueryWrapper<NoteCollection>()
                 .eq(NoteCollection::getUserId, userId)
-                .eq(NoteCollection::getNoteId, noteId)) > 0;
-        if (exists) {
-            this.remove(new LambdaQueryWrapper<NoteCollection>()
-                    .eq(NoteCollection::getUserId, userId)
-                    .eq(NoteCollection::getNoteId, noteId));
-            return false;
+                .eq(NoteCollection::getNoteId, noteId));
+        if (removed) {
+            return false; // 之前已收藏 → 本次为取消收藏
         }
         NoteCollection c = new NoteCollection();
         c.setUserId(userId);
         c.setNoteId(noteId);
         c.setCreateTime(new Date());
-        this.save(c);
+        try {
+            this.save(c);
+        } catch (DuplicateKeyException e) {
+            // 并发下已被另一次请求收藏，结果相同，按幂等返回「已收藏」
+            return true;
+        }
         return true;
     }
 

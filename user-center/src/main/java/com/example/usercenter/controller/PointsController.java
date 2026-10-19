@@ -8,6 +8,9 @@ import com.example.usercenter.common.ResultUtils;
 import com.example.usercenter.model.domain.PointsAccount;
 import com.example.usercenter.model.domain.PointsLog;
 import com.example.usercenter.model.domain.SignInRecord;
+import com.example.usercenter.model.vo.PointsQuotaVO;
+import com.example.usercenter.model.vo.PointsReconcileVO;
+import com.example.usercenter.service.PointsReconcileService;
 import com.example.usercenter.service.PointsService;
 import com.example.usercenter.utils.UserContext;
 import io.swagger.v3.oas.annotations.Operation;
@@ -32,6 +35,7 @@ import java.util.Map;
 public class PointsController {
 
     private final PointsService pointsService;
+    private final PointsReconcileService pointsReconcileService;
 
     @PostMapping("/sign")
     @Operation(summary = "签到")
@@ -73,6 +77,19 @@ public class PointsController {
     @Operation(summary = "某月签到日历")
     public BaseResponse<List<SignInRecord>> calendar(@RequestParam(required = false) String month) {
         return ResultUtils.success(pointsService.getSignCalendar(UserContext.get().getUserId(), month));
+    }
+
+    @GetMapping("/quota")
+    @Operation(summary = "我的积分额度（等级 / 售价上限 / 今日获取剩余）")
+    public BaseResponse<PointsQuotaVO> quota() {
+        return ResultUtils.success(pointsReconcileService.getQuota(UserContext.get().getUserId()));
+    }
+
+    @GetMapping("/reconcile")
+    @AdminRequired
+    @Operation(summary = "积分对账总览（管理员）：发放 / 消耗 / 平台抽成 / 榜单")
+    public BaseResponse<PointsReconcileVO> reconcile(@RequestParam(defaultValue = "30") int days) {
+        return ResultUtils.success(pointsReconcileService.getReconcile(days));
     }
 
     @PostMapping("/migrate")

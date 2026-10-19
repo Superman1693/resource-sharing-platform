@@ -258,7 +258,11 @@ public class SensitiveWordChecker {
     }
 
     private static boolean isIgnoreChar(char c) {
-        return IGNORE_CHARS.indexOf(c) >= 0;
+        // 【修复】除显式标点外，还要跳过不可见 / 零宽字符。
+        // U+200B（零宽空格）、U+FEFF（BOM）、U+200C / U+200D（零宽连接符）等都属于
+        // Unicode FORMAT 类别，Character.isIdentifierIgnorable 会一并覆盖。
+        // 否则只要在敏感词中间插一个零宽空格即可断词，DFA 匹配直接失效。
+        return IGNORE_CHARS.indexOf(c) >= 0 || Character.isIdentifierIgnorable(c);
     }
 
     /**

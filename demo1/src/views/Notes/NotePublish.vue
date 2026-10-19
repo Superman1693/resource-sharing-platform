@@ -3,7 +3,7 @@ import { reactive, ref, computed, onMounted, onBeforeUnmount, watch, defineAsync
 import { useRouter, useRoute } from 'vue-router'
 import { message as antMessage } from 'ant-design-vue'
 import { FileTextOutlined, QuestionCircleOutlined, BookOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons-vue'
-import { createNote, updateNote, getMyNoteDetail, getMyStars, uploadImage, suggestTags } from '../../utils/api'
+import { createNote, updateNote, getMyNoteDetail, getMyStars, uploadImage, suggestTags, getPointsQuota } from '../../utils/api'
 import { CATEGORY_OPTIONS } from '../../utils/constant'
 import dayjs from 'dayjs'
 
@@ -48,7 +48,27 @@ const formState = reactive({
   content: '',
   coverImage: '',
   starId: undefined,
+  // 付费笔记售价（积分）：0 = 免费公开
+  price: 0,
 })
+
+/**
+ * 售价上限由后端按等级下发（GET /points/quota），前端只做展示与输入框预校验。
+ * 加载失败时保持 0 并静默 —— 最终仍由后端校验，不会因拿不到额度而放行超限售价。
+ */
+const priceLimit = ref(0)
+const levelText = ref('')
+getPointsQuota()
+  .then((res) => {
+    const q = res?.data
+    if (!q) return
+    priceLimit.value = Number(q.priceLimit) || 0
+    levelText.value = `Lv.${q.level} ${q.levelName}`
+    if (Number(formState.price) > priceLimit.value) {
+      formState.price = priceLimit.value
+    }
+  })
+  .catch(() => {})
 
 // 发布方式：publish-立即发布 / draft-保存草稿 / schedule-定时发布
 const publishMode = ref('publish')
@@ -173,6 +193,7 @@ const loadNoteDetail = async () => {
         content: res.data.content || '',
         coverImage: res.data.coverImage || '',
         starId: res.data.starId || undefined,
+        price: res.data.price || 0,
       })
       // 回填发布方式
       const st = res.data.status
@@ -221,6 +242,8 @@ const handleSubmit = async () => {
       content: formState.content,
       coverImage: formState.coverImage,
       starId: formState.starId || null,
+      // 付费笔记售价（积分，0 = 免费）
+      price: Number(formState.price) || 0,
       status: publishMode.value === 'draft' ? 'draft'
         : publishMode.value === 'schedule' ? 'scheduled' : 'published',
     }
@@ -304,6 +327,7 @@ const restoreDraft = () => {
       summary: draft.summary || '',
       content: draft.content || '',
       coverImage: draft.coverImage || '',
+      price: draft.price || 0,
     })
     antMessage.info('已恢复上次未提交的草稿')
   } catch (_) {
@@ -389,6 +413,26 @@ onMounted(() => {
             allow-clear
             :options="starList.map(s => ({ label: s.name, value: s.id }))"
           />
+        </a-form-item>
+
+        <a-form-item label="售价（积分，0 = 免费）" name="price">
+          <a-input-number
+            v-model:value="formState.price"
+            :min="0"
+            :max="priceLimit"
+            :step="1"
+            style="width: 180px"
+            placeholder="0 表示免费公开"
+          />
+          <span style="margin-left: 10px; color: #8c8c8c; font-size: 12px">
+            大于 0 时其他用户需消耗积分解锁全文，作者可得 90%
+            <template v-if="levelText">
+              <br />
+              当前 {{ levelText }}，售价上限 {{ priceLimit }} 积分<span v-if="priceLimit === 0">
+                （提升等级后解锁定价，可通过签到、发布、互动累积积分）</span
+              >
+            </template>
+          </span>
         </a-form-item>
 
         <a-form-item label="封面图片（可选）" name="coverImage">

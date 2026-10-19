@@ -5,7 +5,7 @@ import { message as antMessage } from 'ant-design-vue'
 import { EyeOutlined, MessageOutlined, LikeOutlined, ThunderboltOutlined } from '@ant-design/icons-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { getNoteList, searchNotes, getRecommendList } from '../../utils/api'
+import { getNoteList, searchNotes, getRecommendList, getNoteDetail } from '../../utils/api'
 import { exportAsMarkdown, exportAsPDF, exportAsZip } from '../../utils/exportUtils'
 import { DownloadOutlined } from '@ant-design/icons-vue'
 import { CATEGORY_OPTIONS, CATEGORY_TEXT } from '../../utils/constant'
@@ -62,13 +62,36 @@ const handleSelectAll = () => {
   }
 }
 
-const handleExportMarkdown = (note) => {
-  exportAsMarkdown(note)
-  antMessage.success('已导出为 Markdown 文件')
+// 【修复】列表接口为精简传输**不返回 content**（`NoteMapper.xml` 的
+// selectPageWithCondition 只 SELECT 元数据列），此前直接把列表项传给导出函数，
+// 导致导出的 MD/PDF 只有标题、分类、发布时间，正文空白。
+// 这里在导出前按 id 补拉一次详情，拿到完整正文。
+const fetchFullNote = async (note) => {
+  if (!note) throw new Error('笔记不存在')
+  if (note.content) return note
+  const res = await getNoteDetail(Number(note.id))
+  const data = res?.data
+  if (!data || !data.content) {
+    throw new Error('正文为空或该笔记当前不可访问（可能未通过审核）')
+  }
+  return { ...note, ...data }
 }
 
-const handleExportPDF = (note) => {
-  exportAsPDF(note)
+const handleExportMarkdown = async (note) => {
+  try {
+    exportAsMarkdown(await fetchFullNote(note))
+    antMessage.success('已导出为 Markdown 文件')
+  } catch (e) {
+    antMessage.error(`导出失败：${e?.description || e?.message || '未知错误'}`)
+  }
+}
+
+const handleExportPDF = async (note) => {
+  try {
+    await exportAsPDF(await fetchFullNote(note))
+  } catch (e) {
+    antMessage.error(`导出失败：${e?.description || e?.message || '未知错误'}`)
+  }
 }
 
 const handleExportSelected = async () => {
@@ -77,8 +100,14 @@ const handleExportSelected = async () => {
     antMessage.warning('请先选择要导出的笔记')
     return
   }
-  await exportAsZip(selected)
-  antMessage.success(`已导出 ${selected.length} 篇笔记`)
+  try {
+    // 批量导出同样需要先补全正文
+    const fullNotes = await Promise.all(selected.map(fetchFullNote))
+    await exportAsZip(fullNotes)
+    antMessage.success(`已导出 ${selected.length} 篇笔记`)
+  } catch (e) {
+    antMessage.error(`导出失败：${e?.description || e?.message || '未知错误'}`)
+  }
 }
 
 let searchTimer = null
